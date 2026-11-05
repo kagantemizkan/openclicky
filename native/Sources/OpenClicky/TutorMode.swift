@@ -19,24 +19,30 @@ enum TutorMode {
     static let lookPrompt = "(automatic: the user just clicked and this is a fresh screenshot. they said nothing new.)"
 
     private static let startHint = """
-     if the user asks you to teach them or walk them through something step by step, give \
-    only the first step, point at it, and add the tag [TUTOR] to your reply. you will see \
-    their clicks automatically, so don't ask them to tell you after clicking, and don't \
-    mention later steps yet.
+     if what they ask takes more than one action on screen, like how to add, change or find \
+    something, guide them through it without being asked to: say in a few words how many steps \
+    it takes, give only the first step, point at it, and add the tag [TUTOR] to your reply. \
+    you will see their clicks automatically and give the rest then, so don't ask them to tell \
+    you after clicking. for a simple question, like what something is or does, or for a single \
+    action, just answer and don't add the tag.
     """
 
     private static let activeRules = """
      you are now teaching step by step. give exactly one step at a time in one or two short \
     sentences, and point at the exact element whenever there is something to click. never do \
     the step for them. you get a fresh screenshot after each click, so never ask them to tell \
-    you about a click. if the step is done, briefly confirm it and give the next one. if the \
+    you about a click. if the step is done, go straight to the next step and point at it. if \
+    a step opens settings or options the user will need, briefly explain what the main ones \
+    do, in up to three short sentences. if they ask a question, answer it, then say what's \
+    next if a step is still open. if the \
     screen shows they went somewhere wrong, kindly say how to get back. if the screen looks \
     the same as before, or they are still in the middle of the step, they may just be clicking \
     around, so don't repeat the step or nudge them: reply with exactly [WAIT] and nothing \
     else, so you stay silent. do the same if you don't know yet what they want to learn. you \
     can't see typing or key presses \
     until the next click, so for those steps ask them to tell you when they're done. when the \
-    task is finished or they ask to stop, give a short closing sentence and add the tag [DONE].
+    task is finished or they ask to stop, give a short closing sentence and add the tag [DONE]. \
+    if they clearly left for something unrelated, like another app, reply with exactly [DONE].
     """
 
     static func systemPrompt(base: String, active: Bool) -> String {
