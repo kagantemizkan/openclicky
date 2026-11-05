@@ -15,11 +15,6 @@ name: Release OpenClicky.app
 #   APPLE_TEAM_ID             — 10-char Team ID (e.g. G3SBH6CVH2).
 #   SIGNING_CERTIFICATE_P12   — base64 of Developer ID Application .p12.
 #   SIGNING_CERTIFICATE_PASSWORD — password for the .p12.
-#
-# Also optional — if configured, the workflow opens a PR on the tap repo
-# to bump the cask (see Track B #24).
-#
-#   HOMEBREW_TAP_TOKEN        — PAT with `repo` scope on proyecto26/homebrew-tap.
 
 on:
   push:
@@ -176,58 +171,3 @@ jobs:
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
             gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "OpenClicky $VERSION" --notes "Automated release. See docs/plan/ for change audit."
           gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber "native/$DMG" "native/$DMG.sha256"
-
-  bump-tap:
-    name: Open PR on Homebrew tap (optional)
-    needs: build
-    runs-on: ubuntu-latest
-    if: ${{ secrets.HOMEBREW_TAP_TOKEN != '' }}
-    steps:
-      - name: Check out tap
-        uses: actions/checkout@v4
-        with:
-          repository: proyecto26/homebrew-tap
-          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-          path: tap
-
-      - name: Update cask formula
-        shell: bash
-        env:
-          VERSION: ${{ needs.build.outputs.version }}
-          SHA256:  ${{ needs.build.outputs.sha256 }}
-        run: |
-          set -euo pipefail
-          FORMULA="tap/Casks/openclicky.rb"
-          if [ ! -f "$FORMULA" ]; then
-            echo "Formula missing at $FORMULA — seed it from openclicky/casks/openclicky.rb first."
-            exit 1
-          fi
-          sed -E -i '' \
-            -e "s|^( *version *\").*(\")|\1${VERSION}\2|" \
-            -e "s|^( *sha256 *\").*(\")|\1${SHA256}\2|" \
-            "$FORMULA" || python3 -c "
-import re, sys
-p = 'tap/Casks/openclicky.rb'
-s = open(p).read()
-s = re.sub(r'(version\\s+\")[^\"]+(\")', r'\\g<1>${VERSION}\\g<2>', s)
-s = re.sub(r'(sha256\\s+\")[^\"]+(\")', r'\\g<1>${SHA256}\\g<2>', s)
-open(p,'w').write(s)
-"
-          cd tap
-          git config user.name  'github-actions[bot]'
-          git config user.email 'github-actions[bot]@users.noreply.github.com'
-          BRANCH="openclicky-$VERSION"
-          git checkout -b "$BRANCH"
-          git add Casks/openclicky.rb
-          git commit -m "openclicky $VERSION"
-          git push --set-upstream origin "$BRANCH"
-
-      - name: Open PR
-        env:
-          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-          VERSION: ${{ needs.build.outputs.version }}
-        run: |
-          cd tap
-          gh pr create --fill \
-            --title "openclicky $VERSION" \
-            --body "Automated bump from proyecto26/openclicky release."

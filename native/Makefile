@@ -101,7 +101,12 @@ install: bundle
 dmg: bundle
 	@echo "==> building $(DMG_NAME)"
 	rm -f $(DMG_NAME) $(DMG_NAME).sha256
-	hdiutil create -volname $(APP_NAME) -srcfolder $(APP_BUNDLE) -ov -format UDZO $(DMG_NAME)
+	rm -rf .dmg-stage
+	mkdir .dmg-stage
+	ditto $(APP_BUNDLE) .dmg-stage/$(APP_BUNDLE)
+	ln -s /Applications .dmg-stage/Applications
+	hdiutil create -volname $(APP_NAME) -srcfolder .dmg-stage -ov -format UDZO $(DMG_NAME)
+	rm -rf .dmg-stage
 	shasum -a 256 $(DMG_NAME) | awk '{print $$1}' > $(DMG_NAME).sha256
 	@echo "==> $(DMG_NAME) + $(DMG_NAME).sha256"
 

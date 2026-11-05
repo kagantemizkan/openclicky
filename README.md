@@ -54,15 +54,25 @@ It runs on your existing Claude Code login, so there are no API keys to manage.
 
 ## Install
 
-There's no signed release yet, so you build it from source. It takes a couple of minutes and doesn't need the Xcode app.
+> [!IMPORTANT]
+> **OpenClicky requires [Claude Code](https://claude.com/claude-code).** It runs the `claude` command on your Mac and uses your own Claude account, so it has no login or API key of its own. Other CLIs, such as OpenAI Codex, aren't supported.
 
 **You'll need**
 
 - macOS 14.2 or later on Apple Silicon
-- Xcode Command Line Tools: `xcode-select --install`
-- [Claude Code](https://claude.com/claude-code), signed in once by running `claude` in a terminal
+- Claude Code installed and signed in once by running `claude` in a terminal
 
-**Build and install**
+**Download**
+
+1. Download the DMG from the [latest release](https://github.com/kagantemizkan/openclicky/releases/latest), open it and drag OpenClicky to Applications.
+2. Open OpenClicky. macOS blocks it the first time, because the app isn't signed with a paid Apple Developer ID or notarized.
+3. Go to **System Settings → Privacy & Security**, scroll down and click **Open Anyway**.
+
+Look for the blue cursor in your menu bar. Each new version may ask for its permissions again.
+
+**Or build from source**
+
+This also needs the Xcode Command Line Tools (`xcode-select --install`), but not the Xcode app.
 
 ```bash
 git clone https://github.com/kagantemizkan/openclicky.git
@@ -70,7 +80,7 @@ cd openclicky/native
 make install
 ```
 
-This builds the app, copies it to `/Applications` and opens it. Look for the blue cursor in your menu bar.
+This builds the app, copies it to `/Applications` and opens it.
 
 **Grant permissions**
 
