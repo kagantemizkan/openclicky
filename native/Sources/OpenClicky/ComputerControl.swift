@@ -677,7 +677,41 @@ struct SystemControlPoster: ControlPoster {
         }
     }
 
+    /// An app in the background ignores shortcuts sent as keys, as it has no
+    /// key window to take them, but its menus still work. True when pressed.
+    private func pressMenuShortcut(_ key: ControlKeys.Press, app: pid_t) -> Bool {
+        let letters: [CGKeyCode: String] = [0: "A", 8: "C", 9: "V", 7: "X", 6: "Z", 1: "S", 3: "F"]
+        guard key.flags.contains(.maskCommand), let letter = letters[key.code] else { return false }
+        // In these attributes, 0 is Command alone and 1 adds Shift.
+        let modifiers = key.flags.contains(.maskShift) ? 1 : 0
+
+        func value(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
+            var result: CFTypeRef?
+            return AXUIElementCopyAttributeValue(element, name as CFString, &result) == .success ? result : nil
+        }
+        func children(_ element: AXUIElement) -> [AXUIElement] {
+            value(element, kAXChildrenAttribute) as? [AXUIElement] ?? []
+        }
+        func find(in element: AXUIElement, depth: Int) -> AXUIElement? {
+            for child in children(element) {
+                if value(child, kAXMenuItemCmdCharAttribute) as? String == letter,
+                   value(child, kAXMenuItemCmdModifiersAttribute) as? Int ?? 0 == modifiers {
+                    return child
+                }
+                if depth > 0, let found = find(in: child, depth: depth - 1) { return found }
+            }
+            return nil
+        }
+
+        let application = AXUIElementCreateApplication(app)
+        AXUIElementSetMessagingTimeout(application, 1)
+        guard let menuBar = value(application, kAXMenuBarAttribute).map({ $0 as! AXUIElement }),
+              let item = find(in: menuBar, depth: 4) else { return false }
+        return handled(AXUIElementPerformAction(item, kAXPressAction as CFString))
+    }
+
     func press(_ key: ControlKeys.Press, app: pid_t) async {
+        if pressMenuShortcut(key, app: app) { return }
         // Held modifiers are sent to the same app, so the user's stay unaffected.
         var modifiers: [(code: CGKeyCode, flag: CGEventFlags)] = []
         if key.flags.contains(.maskCommand) { modifiers.append((55, .maskCommand)) }

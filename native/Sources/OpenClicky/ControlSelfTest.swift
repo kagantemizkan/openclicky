@@ -66,6 +66,16 @@ enum ControlSelfTest {
         let canvas = ClickCatcher(frame: NSRect(x: 20, y: 20, width: 400, height: 70))
         [plain, buy, delete, field, secure, slider, canvas].forEach(content.addSubview)
 
+        // The menu an ordinary app has, for shortcuts to find.
+        let editMenu = NSMenu(title: "Edit")
+        editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        let editItem = NSMenuItem(title: "Edit", action: nil, keyEquivalent: "")
+        editItem.submenu = editMenu
+        let mainMenu = NSMenu()
+        mainMenu.addItem(NSMenuItem(title: "OpenClicky", action: nil, keyEquivalent: ""))
+        mainMenu.addItem(editItem)
+        NSApp.mainMenu = mainMenu
+
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
         try? await Task.sleep(nanoseconds: 800_000_000)
@@ -137,9 +147,17 @@ enum ControlSelfTest {
         await poster.click(at: center(field), button: .left, count: 1, app: me)
         await settle()
         notePointer(center(field))
+        field.stringValue = ""
         await poster.type("arka plan", app: me)
         await settle()
         results["background.type"] = field.stringValue == "arka plan" ? "pass" : "fail: \(field.stringValue)"
+
+        await poster.press(ControlKeys.press(named: "cmd+a")!, app: me)
+        await poster.press(ControlKeys.press(named: "delete")!, app: me)
+        await settle()
+        // A known limit, not a pass or fail: with no key window, a background
+        // app has nothing to apply a shortcut to. Claude sees it had no effect.
+        results["limit.backgroundShortcut"] = field.stringValue.isEmpty ? "works" : "no effect"
 
         slider.doubleValue = 10
         await poster.drag(from: center(slider, atFraction: 0.1), to: center(slider, atFraction: 0.8), app: me)

@@ -274,8 +274,8 @@ enum Strings {
         "Typing in messaging apps and code editors"
     )
     static let controlStopHint = pick(
-        "Mavi imleç Claude'un faresidir, ne yaptığını oradan izlersin. Durdurmak için Esc'e bas. Bu sırada kendi işine devam edebilirsin. Arka plandaki uygulamaların bazı alanları Claude'un imlecine tepki vermeyebilir.",
-        "The blue cursor is Claude's mouse, so you can watch what it does. Press Esc to stop. You can keep working meanwhile. Some areas of apps in the background may not respond to it."
+        "Mavi imleç Claude'un faresidir, ne yaptığını oradan izlersin. Durdurmak için Esc'e bas. Bu sırada kendi işine devam edebilirsin. Sen başka uygulamaya geçersen, geride kalan uygulamada kısayollar ve bazı alanlar Claude'un imlecine tepki vermeyebilir.",
+        "The blue cursor is Claude's mouse, so you can watch what it does. Press Esc to stop. You can keep working meanwhile. If you switch to another app, shortcuts and some areas of the one left behind may not respond to it."
     )
     static let controlStoppedEsc = pick("Esc'e bastın, durdum.", "You pressed Esc, so I stopped.")
     static func controlLimit(_ rounds: Int) -> String {
