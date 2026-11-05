@@ -100,6 +100,14 @@ final class OpenClickyViewModel: ObservableObject {
     private var pendingDispatch: Task<Void, Never>?
     private var observations: Set<AnyCancellable> = []
 
+    /// See TutorMode. The global monitor exists only while the mode is on and
+    /// watches mouse-up alone: never keyboard, and only that a click happened.
+    @Published private(set) var isTutorMode = false
+    private var tutorClickMonitor: Any?
+    private var tutorSettleTask: Task<Void, Never>?
+    private var tutorLookPending = false
+    private var tutorAutomaticLooks = 0
+
     init() {
         self.hasScreenRecordingPermission = screenRecordingPermission.isGranted
         self.hasAccessibilityPermission = accessibilityPermission.isGranted
@@ -183,7 +191,9 @@ final class OpenClickyViewModel: ObservableObject {
     letters, unless they clearly speak another language. their words usually come from \
     speech recognition and can be misheard: infer what they meant from the screen and \
     context, and if it's a meaningless fragment, briefly ask them to repeat it. never \
-    switch language because of a garbled transcript. reply in one or two sentences, lowercase, \
+    switch language because of a garbled transcript. in turkish, phrase yes/no questions with \
+    the question particle (mı, mi, mu, mü) so they sound like questions when read aloud. \
+    reply in one or two sentences, lowercase, \
     warm, conversational. your name is \
     OpenClicky, written exactly that way with the capital O and C — introduce yourself as \
     "hey, i'm OpenClicky" when a greeting is appropriate; every other word stays lowercase. \
@@ -278,6 +288,7 @@ final class OpenClickyViewModel: ObservableObject {
         logger.info("Dictation ended without a transcript; returning to idle")
         state = .idle
         lastError = dictationManager.lastErrorMessage
+        resumePendingTutorLook()
     }
 
     private func finishListening() {
@@ -287,7 +298,61 @@ final class OpenClickyViewModel: ObservableObject {
         // delivers; that callback fires runTurnFromVoice below.
     }
 
+    // MARK: - Tutor mode
+
+    func setTutorMode(_ enabled: Bool) {
+        guard enabled != isTutorMode else { return }
+        isTutorMode = enabled
+        tutorAutomaticLooks = 0
+        tutorLookPending = false
+        tutorSettleTask?.cancel()
+        tutorSettleTask = nil
+
+        if enabled {
+            tutorClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseUp) { [weak self] _ in
+                Task { @MainActor [weak self] in self?.scheduleTutorLook() }
+            }
+        } else if let monitor = tutorClickMonitor {
+            NSEvent.removeMonitor(monitor)
+            tutorClickMonitor = nil
+        }
+        logger.info("Tutor mode \(enabled ? "on" : "off", privacy: .public)")
+    }
+
+    /// Looks once the UI has settled after the latest click.
+    private func scheduleTutorLook() {
+        tutorSettleTask?.cancel()
+        tutorSettleTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(TutorMode.settleSeconds * 1_000_000_000))
+            guard let self, !Task.isCancelled, self.isTutorMode else { return }
+            // Busy talking or thinking: look again when this turn ends.
+            guard self.state == .idle, !self.isRunningTurn, self.pendingDispatch == nil else {
+                self.tutorLookPending = true
+                return
+            }
+            self.tutorAutomaticLooks += 1
+            guard self.tutorAutomaticLooks <= TutorMode.maxAutomaticLooks else {
+                self.setTutorMode(false)
+                self.lastError = "Tutor mode stopped after \(TutorMode.maxAutomaticLooks) automatic looks. Speak to continue."
+                return
+            }
+            self.runTurn(userPrompt: TutorMode.lookPrompt, thenSpeak: true)
+        }
+    }
+
+    /// Catches a click that arrived while the finished turn was busy.
+    private func resumePendingTutorLook() {
+        guard tutorLookPending else { return }
+        tutorLookPending = false
+        scheduleTutorLook()
+    }
+
     private func runTurnFromVoice(userPrompt: String) {
+        // Speaking answers any click made meanwhile, and shows they're present.
+        tutorLookPending = false
+        tutorSettleTask?.cancel()
+        tutorAutomaticLooks = 0
+
         // Debounce: drop any previously-queued dispatch, then wait
         // 250 ms before hitting Claude. If the user re-presses within
         // that window, cancelCurrentTurn will kill this pending task
@@ -367,12 +432,12 @@ final class OpenClickyViewModel: ObservableObject {
 
                 let result = try await runner.ask(
                     messages: [message],
-                    systemPrompt: Self.systemPrompt,
+                    systemPrompt: TutorMode.systemPrompt(base: Self.systemPrompt, active: isTutorMode),
                     model: selectedModel.rawValue,
                     resumeSessionId: resume
                 ) { [weak self] chunk in
                     Task { @MainActor [weak self] in
-                        self?.streamingText = chunk.accumulatedText
+                        self?.streamingText = TutorMode.displayText(chunk.accumulatedText)
                     }
                 }
 
@@ -381,8 +446,22 @@ final class OpenClickyViewModel: ObservableObject {
                     SessionPersistence.shared.save(sessionId: sessionId)
                 }
 
+                guard self.turnGeneration == thisTurn, !Task.isCancelled else { return }
+
+                let reply = TutorMode.parse(result.text)
+                if reply.shouldStart { setTutorMode(true) }
+                if reply.isFinished { setTutorMode(false) }
+
+                // Nothing to say yet: stay silent until the next click.
+                if reply.shouldWait {
+                    streamingText = ""
+                    state = .idle
+                    Task { @MainActor [weak self] in self?.resumePendingTutorLook() }
+                    return
+                }
+
                 // Parse POINT tag + strip it before TTS.
-                let parsed = PointTagParser.parse(result.text)
+                let parsed = PointTagParser.parse(reply.text)
                 streamingText = parsed.spokenText
 
                 // Map the tag's screenshot-pixel coords to a global
@@ -420,6 +499,8 @@ final class OpenClickyViewModel: ObservableObject {
                 if self.turnGeneration == thisTurn {
                     state = .idle
                     scheduleResponseFade(for: thisTurn)
+                    // After the defer above clears isRunningTurn.
+                    Task { @MainActor [weak self] in self?.resumePendingTutorLook() }
                 }
             } catch is CancellationError {
                 // cancelCurrentTurn already wrote state (and may have

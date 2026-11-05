@@ -70,6 +70,8 @@ struct BlueCursorView: View {
     @State private var chipText: String? = nil
     @State private var chipOpacity: Double = 0
     @State private var chipScale: CGFloat = 1
+    @State private var chipSize: CGSize = .zero
+    @State private var bubbleSize: CGSize = .zero
     @State private var flightTimer: Timer?
 
     private static let log = Logger(subsystem: "com.proyecto26.openclicky", category: "BlueCursorView")
@@ -139,8 +141,15 @@ struct BlueCursorView: View {
             if buddyVisibleOnThisScreen
                 && manager.voiceState != .listening
                 && !manager.streamingResponseText.isEmpty {
+                let origin = OverlayPlacement.boxOrigin(
+                    anchor: cursorPosition,
+                    size: bubbleSize,
+                    screen: screenFrame.size,
+                    gap: CGSize(width: 28, height: 20)
+                )
                 responseBubble(manager.streamingResponseText)
-                    .offset(x: cursorPosition.x + 28, y: cursorPosition.y + 20)
+                    .onGeometryChange(for: CGSize.self, of: \.size) { bubbleSize = $0 }
+                    .offset(x: origin.x, y: origin.y)
                     .transition(.opacity.combined(with: .move(edge: .top)))
             }
 
@@ -148,12 +157,14 @@ struct BlueCursorView: View {
             // POINT target. Fades/scales in, holds, then fades out.
             if mode == .pointingAtTarget, let chipText {
                 labelChip(chipText)
+                    .onGeometryChange(for: CGSize.self, of: \.size) { chipSize = $0 }
                     .scaleEffect(chipScale)
                     .opacity(chipOpacity)
-                    .position(
-                        x: cursorPosition.x + 10 + 40,
-                        y: max(20, cursorPosition.y - 16)
-                    )
+                    .position(OverlayPlacement.chipCenter(
+                        preferred: CGPoint(x: cursorPosition.x + 10 + 40, y: cursorPosition.y - 16),
+                        size: chipSize,
+                        screen: screenFrame.size
+                    ))
                     .animation(.spring(response: 0.4, dampingFraction: 0.6), value: chipScale)
                     .animation(.easeOut(duration: 0.3), value: chipOpacity)
             }

@@ -212,9 +212,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func handleEscapePress() {
-        if viewModel.isRunningTurn || viewModel.state != .idle {
+        if viewModel.isRunningTurn || viewModel.state != .idle || viewModel.isTutorMode {
             logger.info("Esc pressed — cancelling turn")
             viewModel.cancelCurrentTurn()
+            viewModel.setTutorMode(false)
         } else if panel?.isVisible == true {
             dismissPanel()
         }

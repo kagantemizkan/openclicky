@@ -308,6 +308,10 @@ final class ClaudeCLIRunner {
             "--include-partial-messages",
             "--model", model,
             "--system-prompt", systemPrompt,
+            // By default a resumed conversation keeps the prompt from its
+            // first request and ignores this one, which would hide the
+            // tutor rules from a conversation already under way.
+            "--system-prompt-snapshot", "off",
             "--setting-sources", "",
             "--disable-slash-commands",
             "--strict-mcp-config",

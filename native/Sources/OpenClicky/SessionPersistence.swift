@@ -25,7 +25,20 @@ struct SessionPersistence {
         directoryURL.appendingPathComponent(filename, isDirectory: false)
     }
 
-    /// Loads the last saved session_id, or nil if missing/malformed.
+    /// A conversation resumes only within this window. Every turn keeps its
+    /// screenshots in the session, so an endless one grows slower and uses
+    /// more of the user's plan, and old screens stop being useful anyway.
+    static let maxIdleSeconds: TimeInterval = 30 * 60
+
+    static func isFresh(updatedAt: String?, now: Date = Date()) -> Bool {
+        guard let updatedAt,
+              let date = ISO8601DateFormatter().date(from: updatedAt) else {
+            return false
+        }
+        return now.timeIntervalSince(date) <= maxIdleSeconds
+    }
+
+    /// Loads the last saved session_id, or nil if missing, malformed or stale.
     func load() -> String? {
         let url = fileURL
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
@@ -38,6 +51,10 @@ struct SessionPersistence {
             }
             guard let sessionId = obj["sessionId"] as? String, !sessionId.isEmpty else {
                 logger.info("last-session.json has no sessionId; ignoring")
+                return nil
+            }
+            guard Self.isFresh(updatedAt: obj["updatedAt"] as? String) else {
+                logger.info("last session is stale; starting a new conversation")
                 return nil
             }
             return sessionId

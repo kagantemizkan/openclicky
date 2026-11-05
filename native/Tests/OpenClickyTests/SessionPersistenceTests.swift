@@ -29,6 +29,15 @@ final class SessionPersistenceTests: XCTestCase {
         super.tearDown()
     }
 
+    func testFreshnessWindow() {
+        let now = Date()
+        let stamp = { (age: TimeInterval) in ISO8601DateFormatter().string(from: now.addingTimeInterval(-age)) }
+        XCTAssertTrue(SessionPersistence.isFresh(updatedAt: stamp(60), now: now))
+        XCTAssertFalse(SessionPersistence.isFresh(updatedAt: stamp(SessionPersistence.maxIdleSeconds + 60), now: now))
+        XCTAssertFalse(SessionPersistence.isFresh(updatedAt: nil, now: now))
+        XCTAssertFalse(SessionPersistence.isFresh(updatedAt: "not a date", now: now))
+    }
+
     func testLoadReturnsNilWhenFileIsMissing() {
         XCTAssertNil(persistence.load())
     }

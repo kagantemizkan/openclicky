@@ -378,6 +378,15 @@ struct PanelView: View {
                 .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.04)))
             }
 
+            Toggle("Tutor mode: looks again after each click", isOn: Binding(
+                get: { viewModel.isTutorMode },
+                set: { viewModel.setTutorMode($0) }
+            ))
+            .toggleStyle(.switch)
+            .controlSize(.mini)
+            .font(.system(size: 11))
+            .foregroundColor(.white.opacity(0.8))
+
             if let error = viewModel.lastError {
                 Text(error)
                     .font(.system(size: 11))
