@@ -193,6 +193,26 @@ final class OverlayManager: ObservableObject {
         }
     }
 
+    /// Moves in a straight line at an even speed, the way a drag does.
+    func glide(to end: CGPoint, duration: TimeInterval) {
+        goHomeTask?.cancel()
+        flightTask?.cancel()
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, duration > 0 else {
+            cursorLocation = end
+            return
+        }
+        let start = cursorLocation
+        flightTask = Task { @MainActor [weak self] in
+            let began = Date()
+            while !Task.isCancelled {
+                let t = min(Date().timeIntervalSince(began) / duration, 1)
+                self?.cursorLocation = CGPoint(x: start.x + (end.x - start.x) * t, y: start.y + (end.y - start.y) * t)
+                if t >= 1 { return }
+                try? await Task.sleep(nanoseconds: 16_000_000)
+            }
+        }
+    }
+
     /// Drops the reply and label so an interrupted turn leaves no residue.
     func reset() {
         flightTask?.cancel()

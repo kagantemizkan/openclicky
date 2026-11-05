@@ -718,12 +718,14 @@ final class OpenClickyViewModel: ObservableObject {
             poster: SystemControlPoster(),
             inspector: SystemControlInspector(),
             allowsBrowsers: preferences.controlInBrowsers,
-            onStep: { [weak self] point, dragEnd, display in
+            onStep: { [weak self] point, isDrag, display in
                 guard let overlay = self?.overlayManager else { return }
                 overlay.flyTo(BlueCursorTarget(globalLocation: point, displayFrame: display, label: nil))
-                let mark: ScreenAnnotation.Shape = dragEnd.map { .arrow(from: point, to: $0) }
-                    ?? .circle(center: point, radius: 14)
-                overlay.show([ScreenAnnotation(shape: mark)])
+                // A ring marks a click. A drag shows itself as the cursor moves.
+                overlay.show(isDrag ? [] : [ScreenAnnotation(shape: .circle(center: point, radius: 14))])
+            },
+            onDrag: { [weak self] end in
+                self?.overlayManager.glide(to: end, duration: ControlTiming.dragSeconds)
             },
             approve: { [weak self] question in
                 await self?.askControlApproval(question) ?? false

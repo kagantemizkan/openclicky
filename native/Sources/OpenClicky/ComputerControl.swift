@@ -362,6 +362,11 @@ protocol ControlInspector {
     func focusedTarget(inApp app: pid_t?) -> ControlTarget
 }
 
+enum ControlTiming {
+    /// How long a drag takes, so Claude's cursor can move along with it.
+    static let dragSeconds: TimeInterval = 0.6
+}
+
 struct ControlReport: Equatable {
     /// Our own wording only. Nothing read off the screen goes back to Claude here.
     var lines: [String] = []
@@ -376,9 +381,11 @@ final class ControlExecutor {
     private let inspector: ControlInspector
     private let allowsBrowsers: Bool
     private let approve: (_ question: String) async -> Bool
-    /// Shows where the next action lands, in global AppKit coordinates, and
-    /// where a drag ends. Claude's cursor is how the user follows along.
-    private let onStep: (_ point: CGPoint, _ dragEnd: CGPoint?, _ display: CGRect) -> Void
+    /// Shows where the next action lands, in global AppKit coordinates. Claude's
+    /// cursor is how the user follows along.
+    private let onStep: (_ point: CGPoint, _ isDrag: Bool, _ display: CGRect) -> Void
+    /// A drag is starting: Claude's cursor moves with it to this point.
+    private let onDrag: (_ end: CGPoint) -> Void
     /// Lets Claude's own cursor arrive before the action lands.
     private let stepDelay: UInt64
 
@@ -387,7 +394,8 @@ final class ControlExecutor {
         inspector: ControlInspector,
         allowsBrowsers: Bool,
         stepDelay: UInt64 = 700_000_000,
-        onStep: @escaping (CGPoint, CGPoint?, CGRect) -> Void = { _, _, _ in },
+        onStep: @escaping (CGPoint, Bool, CGRect) -> Void = { _, _, _ in },
+        onDrag: @escaping (CGPoint) -> Void = { _ in },
         approve: @escaping (String) async -> Bool
     ) {
         self.poster = poster
@@ -395,6 +403,7 @@ final class ControlExecutor {
         self.allowsBrowsers = allowsBrowsers
         self.stepDelay = stepDelay
         self.onStep = onStep
+        self.onDrag = onDrag
         self.approve = approve
     }
 
@@ -504,7 +513,7 @@ final class ControlExecutor {
                 return refused(&report, action, Strings.controlUnknownApp)
             }
             report.app = pid
-            if let start { onStep(start.appKit, end?.appKit, start.frame) }
+            if let start { onStep(start.appKit, end != nil, start.frame) }
             try? await Task.sleep(nanoseconds: stepDelay)
             if Task.isCancelled {
                 report.stopped = true
@@ -515,6 +524,7 @@ final class ControlExecutor {
             case .click(_, _, let button, let count, _):
                 await poster.click(at: start!.display, button: button, count: count, app: pid)
             case .drag:
+                onDrag(end!.appKit)
                 await poster.drag(from: start!.display, to: end!.display, app: pid)
             case .scroll(_, _, let amount, _):
                 await poster.scroll(at: start!.display, lines: amount, app: pid)
@@ -643,11 +653,11 @@ struct SystemControlPoster: ControlPoster {
     func drag(from: CGPoint, to: CGPoint, app: pid_t) async {
         post(.leftMouseDown, at: from, clickState: 1, app: app)
         await pause(60)
-        let steps = 24
+        let steps = 36
         for step in 1...steps {
             let t = CGFloat(step) / CGFloat(steps)
             post(.leftMouseDragged, at: CGPoint(x: from.x + (to.x - from.x) * t, y: from.y + (to.y - from.y) * t), app: app)
-            await pause(12)
+            await pause(UInt64(ControlTiming.dragSeconds * 1000) / UInt64(steps))
         }
         await pause(60)
         post(.leftMouseUp, at: to, clickState: 1, app: app)

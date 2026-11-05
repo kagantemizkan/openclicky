@@ -301,6 +301,43 @@ final class ComputerControlTests: XCTestCase {
     }
 
     @MainActor
+    func testClaudesCursorMovesWithADragAndEndsWhereItEnds() async {
+        var events: [String] = []
+        var drawnEnd: CGPoint?
+        let poster = FakePoster()
+        let executor = ControlExecutor(
+            poster: poster,
+            inspector: FakeInspector(),
+            allowsBrowsers: false,
+            stepDelay: 0,
+            onStep: { _, isDrag, _ in events.append(isDrag ? "fly to start of drag" : "fly") },
+            onDrag: { end in
+                events.append("glide")
+                drawnEnd = end
+                XCTAssertEqual(poster.log, [], "the cursor should set off as the drag does")
+            },
+            approve: { _ in false }
+        )
+        _ = await executor.run(
+            [.drag(fromX: 0, fromY: 0, toX: 320, toY: 200, screen: nil)],
+            manifest: manifest,
+            primaryHeight: 900
+        )
+        XCTAssertEqual(events, ["fly to start of drag", "glide"])
+        // Half way across the display from its top left: AppKit y grows upwards.
+        XCTAssertEqual(drawnEnd, CGPoint(x: 1640, y: 400))
+        XCTAssertEqual(poster.log.count, 1)
+    }
+
+    @MainActor
+    func testGlidingEndsExactlyOnTheTarget() async throws {
+        let overlay = OverlayManager(defaults: UserDefaults(suiteName: "openclicky-glide-\(UUID().uuidString)")!)
+        overlay.glide(to: CGPoint(x: 321, y: 123), duration: 0.05)
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(overlay.cursorLocation, CGPoint(x: 321, y: 123))
+    }
+
+    @MainActor
     func testAScreenThatDoesntExistIsRefused() async {
         let poster = FakePoster()
         let report = await executor(poster: poster).run(
