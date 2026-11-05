@@ -290,7 +290,13 @@ final class OpenClickyViewModel: ObservableObject {
     no emojis, no bullet lists, no markdown. reference specific things on screen when \
     relevant. if you want to flag a ui element, append a tag `[POINT:x,y:label]` at the end \
     where x,y are pixel coordinates in the screenshot's pixel space and label is 1-3 words. \
-    if pointing wouldn't help, omit the tag.
+    if pointing wouldn't help, omit the tag. you can also draw on the screen with up to three \
+    tags at the end, in the same pixel space: `[CIRCLE:x,y,radius]` around one thing, \
+    `[BOX:x,y,width,height]` around a group or area with x,y its top left, and \
+    `[ARROW:x1,y1,x2,y2]` from one place to another, for a drag or a direction. add `:screenN` \
+    before the closing bracket when it isn't screen1. draw only when it explains more than \
+    pointing would, like several things at once or where to drag, and make shapes fit closely \
+    around what they mark. the user sees the drawings, so don't describe them.
     """
 
     // MARK: - Claude CLI probe
@@ -491,6 +497,7 @@ final class OpenClickyViewModel: ObservableObject {
         state = thenSpeak ? .thinking : state
         streamingText = ""
         lastError = nil
+        overlayManager.show([])
         if userPrompt != TutorMode.lookPrompt { lessonAwaitsGoal = false }
         let frontmost = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
 
@@ -587,13 +594,15 @@ final class OpenClickyViewModel: ObservableObject {
                     return
                 }
 
-                // Parse POINT tag + strip it before TTS.
-                let parsed = PointTagParser.parse(reply.text)
+                // Strip drawing and POINT tags before TTS.
+                let drawing = DrawTagParser.parse(reply.text)
+                let parsed = PointTagParser.parse(drawing.text)
                 streamingText = parsed.spokenText
 
-                // Map the tag's screenshot-pixel coords to a global
-                // AppKit CGPoint using the freshly-captured manifest.
+                // Map the tags' screenshot-pixel coords to global AppKit
+                // coordinates using the freshly-captured manifest.
                 let mapped = PointCoordinateMapper.map(point: parsed.point, manifest: manifest)
+                let annotations = PointCoordinateMapper.annotations(from: drawing.tags, manifest: manifest)
 
                 // Between every awaited step below, re-check the turn
                 // generation. A cancelled turn must not go on to speak
@@ -615,7 +624,16 @@ final class OpenClickyViewModel: ObservableObject {
                         displayFrame: mapped.displayFrame,
                         label: mapped.label
                     ))
+                } else if let first = annotations.first,
+                          let screen = manifest.screens.first(where: { first.isOn($0.displayFrame) }) {
+                    // Keep the caption beside the drawing, not back at home.
+                    overlayManager.flyTo(BlueCursorTarget(
+                        globalLocation: first.cursorAnchor,
+                        displayFrame: screen.displayFrame,
+                        label: nil
+                    ))
                 }
+                overlayManager.show(annotations)
 
                 if thenSpeak, preferences.speaksReplies {
                     await textToSpeech.speak(parsed.spokenText)

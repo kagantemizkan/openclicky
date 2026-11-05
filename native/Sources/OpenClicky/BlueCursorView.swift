@@ -110,6 +110,11 @@ struct BlueCursorView: View {
 
     var body: some View {
         ZStack(alignment: .topLeading) {
+            ScreenAnnotationsLayer(
+                annotations: manager.annotations,
+                screenFrame: screenFrame,
+                color: preferences.cursorColor
+            )
             if manager.isCursorVisible, screenFrame.contains(manager.cursorLocation) {
                 let tip = viewPoint(manager.cursorLocation)
                 arrow(tip: tip)

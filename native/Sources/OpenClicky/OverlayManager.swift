@@ -78,6 +78,8 @@ final class OverlayManager: ObservableObject {
     @Published private(set) var cursorLocation: CGPoint = .zero { didSet { updatePointerRegion() } }
     @Published private(set) var isCursorVisible = false { didSet { updatePointerRegion() } }
     @Published private(set) var pointLabel: String? { didSet { updatePointerRegion() } }
+    /// What Claude drew for the current reply or lesson step.
+    @Published private(set) var annotations: [ScreenAnnotation] = []
     /// The part of the cursor the mouse is over.
     @Published private(set) var hoveredRegion: CursorHit?
 
@@ -192,12 +194,19 @@ final class OverlayManager: ObservableObject {
     func reset() {
         flightTask?.cancel()
         pointLabel = nil
+        annotations = []
         streamingResponseText = ""
     }
 
     /// The user clicked during a lesson: uncover what the click may open.
     func clearLabel() {
         pointLabel = nil
+        annotations = []
+    }
+
+    func show(_ annotations: [ScreenAnnotation]) {
+        self.annotations = annotations
+        if !annotations.isEmpty { isCursorVisible = true }
     }
 
     // MARK: - Resting
@@ -229,6 +238,7 @@ final class OverlayManager: ObservableObject {
         guard press == nil else { return }
         isOnTarget = false
         pointLabel = nil
+        annotations = []
         // A home on a display that has since gone is ignored, not forgotten.
         let usableHome = customHome.flatMap { home in isOnAScreen(home) ? home : nil }
         let home = usableHome ?? homeProvider() ?? fallbackHome
