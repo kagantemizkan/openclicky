@@ -7,21 +7,55 @@
 # Data: Alania Turkish Synthetic Speech and Alania Turkish Domain Text by
 # PatientDesk AI (CC BY 4.0).
 set -euo pipefail
+export PATH=/usr/bin:/bin:/usr/sbin:/sbin
 
 AHENK_DIR="${1:-$HOME/Library/Application Support/OpenClicky/ahenk}"
 REPO_COMMIT=8981df9354a6dc95a3a2b4730b7fbff196dda219
 MODEL_REVISION=345c4cbb934815fa96ffd0d5061fd913237544bc
+UV_VERSION=0.13.5
+UV_SHA256=743f85035a1996ecb350659e01cd9faea9709829be09b1b4b03c73eaf3c9cd73
 
-command -v uv >/dev/null || { echo "uv is required: brew install uv" >&2; exit 1; }
+# Everything stays in one folder: removing it removes the voice. The app runs
+# this script too, so it needs nothing but what macOS has.
+WORK="$AHENK_DIR/.install"
+child=""
+trap 'if [ -n "$child" ]; then kill "$child" 2>/dev/null || true; fi; exit 143' TERM INT
+trap 'rm -rf "$WORK"' EXIT
 
-mkdir -p "$AHENK_DIR"
+# Runs in the background so that cancelling can stop it.
+run() {
+  "$@" &
+  child=$!
+  wait "$child"
+  child=""
+}
+
+rm -rf "$WORK"
+mkdir -p "$WORK"
 chmod 700 "$AHENK_DIR"
-uv venv --quiet --allow-existing --python 3.12 "$AHENK_DIR/venv"
-uv pip install --quiet --python "$AHENK_DIR/venv/bin/python" \
-  torch==2.15.0 ema-lightning==1.1.2 soundfile==0.14.0 numpy==2.5.4 huggingface-hub==2.4.0 \
-  "git+https://github.com/ozguradmin/ahenk-turkish-tts@$REPO_COMMIT"
 
-"$AHENK_DIR/venv/bin/python" -I - "$AHENK_DIR/model" "$MODEL_REVISION" <<'PY'
+export UV_NO_CONFIG=1
+export UV_CACHE_DIR="$WORK/uv-cache"
+export UV_PYTHON_INSTALL_DIR="$AHENK_DIR/python"
+export UV_PYTHON_PREFERENCE=only-managed
+export HF_HOME="$WORK/hf-home"
+export HF_HUB_DISABLE_TELEMETRY=1
+
+echo "step:tools"
+run curl -fsSL --retry 3 -o "$WORK/uv.tar.gz" \
+  "https://github.com/astral-sh/uv/releases/download/$UV_VERSION/uv-aarch64-apple-darwin.tar.gz"
+echo "$UV_SHA256  $WORK/uv.tar.gz" | shasum -a 256 -c --status
+tar -xzf "$WORK/uv.tar.gz" -C "$WORK" --strip-components 1
+UV="$WORK/uv"
+
+echo "step:packages"
+run "$UV" venv --quiet --allow-existing --python 3.12 "$AHENK_DIR/venv"
+run "$UV" pip install --quiet --python "$AHENK_DIR/venv/bin/python" \
+  torch==2.15.0 ema-lightning==1.1.2 soundfile==0.14.0 numpy==2.5.4 huggingface-hub==2.4.0 \
+  "https://github.com/ozguradmin/ahenk-turkish-tts/archive/$REPO_COMMIT.tar.gz"
+
+echo "step:model"
+run "$AHENK_DIR/venv/bin/python" -I -c '
 import sys
 from huggingface_hub import snapshot_download
 snapshot_download(
@@ -30,6 +64,11 @@ snapshot_download(
     allow_patterns=["*.pt", "ahenk_cep.py"],
     local_dir=sys.argv[1],
 )
-PY
+' "$WORK/model" "$MODEL_REVISION"
 
+# Last, because the app counts the voice as installed once the model is there.
+rm -rf "$AHENK_DIR/model"
+mv "$WORK/model" "$AHENK_DIR/model"
+rm -rf "$AHENK_DIR/model/.cache"
+echo "step:done"
 du -sh "$AHENK_DIR"

@@ -411,6 +411,9 @@ struct VoiceSettings: View {
             Section {
                 ForEach(Array(preferences.voiceOrder.enumerated()), id: \.element) { index, engine in
                     voiceRow(engine, position: index)
+                    if engine == .ahenk && !speech.isAhenkInstalled {
+                        AhenkInstallRow(installer: speech.ahenkInstaller, speech: speech)
+                    }
                 }
                 // The raw error stays actionable: 401 means a bad or used-up
                 // key, and voice_not_found a wrong voice id.
@@ -549,5 +552,55 @@ struct VoiceSettings: View {
         apiKey = ""
         voiceId = ""
         saveStatus = Strings.cleared
+    }
+}
+
+/// Installs the local Turkish voice, which downloads a lot, so only on request.
+private struct AhenkInstallRow: View {
+    @ObservedObject var installer: AhenkInstaller
+    let speech: TextToSpeech
+
+    var body: some View {
+        HStack(spacing: 10) {
+            switch installer.state {
+            case .idle:
+                Text(Strings.ahenkInstallDetail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 8)
+                Button(Strings.ahenkInstall, action: install)
+                    .accessibilityLabel(Strings.ahenkInstallLabel)
+            case .running(let step):
+                ProgressView().controlSize(.small)
+                Text(title(of: step))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 8)
+                Button(Strings.cancel, action: installer.cancel)
+            case .failed(let message):
+                Label(message, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .lineLimit(4)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 8)
+                Button(Strings.ahenkInstallRetry, action: install)
+            }
+        }
+    }
+
+    private func install() {
+        installer.install { speech.reloadLocalVoice() }
+    }
+
+    private func title(of step: AhenkInstaller.Step) -> String {
+        switch step {
+        case .tools: return Strings.ahenkStepTools
+        case .packages: return Strings.ahenkStepPackages
+        case .model: return Strings.ahenkStepModel
+        }
     }
 }

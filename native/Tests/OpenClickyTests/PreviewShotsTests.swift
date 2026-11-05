@@ -56,7 +56,7 @@ final class PreviewShotsTests: XCTestCase {
             settings.setFrameOrigin(CGPoint(x: -4000, y: -4000))
             settings.orderFrontRegardless()
             let tabs = try XCTUnwrap(settings.contentViewController as? NSTabViewController)
-            for (index, tab) in ["general", "appearance", "connections", "voice"].enumerated() {
+            for (index, tab) in ["general", "appearance", "connections", "control", "voice"].enumerated() {
                 tabs.selectedTabViewItemIndex = index
                 try await Task.sleep(nanoseconds: 600_000_000)
                 let frameView = try XCTUnwrap(settings.contentView?.superview)
@@ -65,6 +65,14 @@ final class PreviewShotsTests: XCTestCase {
                 try rep.representation(using: .png, properties: [:])?
                     .write(to: URL(fileURLWithPath: "\(directory)/settings-\(tab)-\(name).png"))
             }
+            // A test bundle has no installer script, which shows the failure.
+            viewModel.textToSpeech.ahenkInstaller.install {}
+            try await Task.sleep(nanoseconds: 600_000_000)
+            let frameView = try XCTUnwrap(settings.contentView?.superview)
+            let rep = try XCTUnwrap(frameView.bitmapImageRepForCachingDisplay(in: frameView.bounds))
+            frameView.cacheDisplay(in: frameView.bounds, to: rep)
+            try rep.representation(using: .png, properties: [:])?
+                .write(to: URL(fileURLWithPath: "\(directory)/settings-voice-failed-\(name).png"))
             settings.orderOut(nil)
 
             let frame = CGRect(x: 0, y: 0, width: 640, height: 240)

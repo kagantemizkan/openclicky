@@ -163,7 +163,7 @@ Unnamed sessions start fresh after 30 idle minutes. Named ones stay until you de
 | Voice | Runs | Notes |
 |---|---|---|
 | **ElevenLabs** | Online | Uses your own API key, kept in the macOS Keychain |
-| **Ahenk Cep** | On your Mac | Turkish only. Install with `native/scripts/setup-ahenk` (needs [`uv`](https://github.com/astral-sh/uv)) |
+| **Ahenk Cep** | On your Mac | Turkish only. Click **Install** next to it in Settings → Voice. Takes about 770 MB |
 | **macOS voice** | On your Mac | Reads any language, with nothing to set up |
 
 ### Connections

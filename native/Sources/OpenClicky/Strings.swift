@@ -213,6 +213,18 @@ enum Strings {
     static let voiceSystemDetail = pick("Bu Mac'te çalışır, her dili okur", "Runs on this Mac, reads any language")
     static let voiceNeedsKey = pick("API anahtarı gerekli", "API key needed")
     static let voiceNotInstalled = pick("Kurulu değil", "Not installed")
+    static let ahenkInstall = pick("Kur", "Install")
+    static let ahenkInstallLabel = pick("Ahenk Cep'i kur", "Install Ahenk Cep")
+    static let ahenkInstallDetail = pick(
+        "Bu Mac'te yaklaşık 770 MB yer kaplar. Kurmak için internet gerekir, sonra internetsiz çalışır.",
+        "Takes about 770 MB on this Mac. Installing needs internet; after that it works offline."
+    )
+    static let ahenkInstallRetry = pick("Tekrar dene", "Try again")
+    static let ahenkInstallFailed = pick("Kurulum tamamlanamadı.", "The install didn't finish.")
+    static let ahenkInstallMissingScript = pick("Kurulum dosyası bu sürümde yok.", "This build doesn't include the installer.")
+    static let ahenkStepTools = pick("Kurulum araçları indiriliyor…", "Downloading the install tools…")
+    static let ahenkStepPackages = pick("Ses motoru indiriliyor, birkaç dakika sürebilir…", "Downloading the voice engine, this can take a few minutes…")
+    static let ahenkStepModel = pick("Ses modeli indiriliyor…", "Downloading the voice model…")
     static let voiceMoveUp = pick("Yukarı taşı", "Move up")
     static let voiceMoveDown = pick("Aşağı taşı", "Move down")
     static let voiceTry = pick("Sesi dene", "Try voice")

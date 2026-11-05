@@ -102,7 +102,9 @@ final class TextToSpeech: NSObject, ObservableObject {
     private var playerContinuation: CheckedContinuation<Void, Never>?
 
     // Ahenk Cep path
-    private let ahenk = AhenkTTSClient.installed()
+    @Published private var ahenk = AhenkTTSClient.installed()
+    /// Lives here, not in the view, so closing Settings doesn't lose an install.
+    let ahenkInstaller = AhenkInstaller()
     /// Bumped by stop() and speak(), so audio that finishes synthesizing
     /// after being cancelled or replaced is dropped instead of played.
     private var speechGeneration = 0
@@ -120,6 +122,12 @@ final class TextToSpeech: NSObject, ObservableObject {
             .removeDuplicates()
             .sink { [weak self] enabled in self?.setLocalVoiceLoaded(enabled) }
             .store(in: &observations)
+    }
+
+    /// Starts using the local voice right after it's installed from Settings.
+    func reloadLocalVoice() {
+        ahenk = AhenkTTSClient.installed()
+        warmUpLocalVoice()
     }
 
     /// Loads the local voice so the first reply, or the first fallback to it,

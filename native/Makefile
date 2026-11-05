@@ -70,6 +70,7 @@ bundle:
 	cp Info.plist $(APP_ROOT)/Info.plist
 	cp Resources/OpenClicky.icns $(APP_RES)/OpenClicky.icns
 	cp scripts/ahenk_tts_server.py $(APP_RES)/ahenk_tts_server.py
+	cp scripts/setup-ahenk $(APP_RES)/setup-ahenk
 	@if [ "$(SIGN_IDENTITY)" = "-" ]; then \
 		echo "==> codesign: AD-HOC (TCC will re-prompt on every rebuild)"; \
 		echo "    Tip: sign into Xcode with an Apple ID (free), then rebuild"; \
