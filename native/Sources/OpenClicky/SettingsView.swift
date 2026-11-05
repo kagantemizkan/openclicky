@@ -6,26 +6,53 @@
 
 import SwiftUI
 
-struct SettingsView: View {
+enum SettingsWindow {
+    /// Tabs in the toolbar, as macOS settings windows have them. The window
+    /// takes each tab's height.
+    @MainActor
+    static func make(viewModel: OpenClickyViewModel) -> NSWindow {
+        let preferences = viewModel.preferences
+        let tabs = NSTabViewController()
+        tabs.tabStyle = .toolbar
+        tabs.canPropagateSelectedChildViewControllerTitle = false
+
+        func add<Content: View>(_ title: String, icon: String, height: CGFloat, _ content: Content) {
+            let host = NSHostingController(rootView: content.frame(width: 480, height: height))
+            host.sizingOptions = .preferredContentSize
+            let item = NSTabViewItem(viewController: host)
+            item.label = title
+            item.image = NSImage(systemSymbolName: icon, accessibilityDescription: title)
+            tabs.addTabViewItem(item)
+        }
+        add(Strings.tabGeneral, icon: "gearshape", height: 290, GeneralSettings(
+            viewModel: viewModel,
+            overlay: viewModel.overlayManager,
+            preferences: preferences
+        ))
+        add(Strings.tabAppearance, icon: "paintpalette", height: 340, AppearanceSettings(preferences: preferences))
+        add(Strings.tabConnections, icon: "link", height: 320, ConnectionsSettings(preferences: preferences))
+        add(Strings.tabVoice, icon: "speaker.wave.2", height: 570, VoiceSettings(
+            viewModel: viewModel,
+            speech: viewModel.textToSpeech,
+            preferences: preferences
+        ))
+
+        let window = NSWindow(contentViewController: tabs)
+        window.title = Strings.settingsTitle
+        window.styleMask = [.titled, .closable]
+        window.toolbarStyle = .preference
+        window.isReleasedWhenClosed = false
+        window.center()
+        return window
+    }
+}
+
+struct GeneralSettings: View {
     @ObservedObject var viewModel: OpenClickyViewModel
     @ObservedObject var overlay: OverlayManager
     @ObservedObject var preferences: AppPreferences
 
     var body: some View {
-        TabView {
-            general
-                .tabItem { Label(Strings.tabGeneral, systemImage: "gearshape") }
-            appearance
-                .tabItem { Label(Strings.tabAppearance, systemImage: "paintpalette") }
-            ConnectionsSettings(preferences: preferences)
-                .tabItem { Label(Strings.tabConnections, systemImage: "link") }
-            VoiceSettings(viewModel: viewModel, speech: viewModel.textToSpeech, preferences: preferences)
-                .tabItem { Label(Strings.tabVoice, systemImage: "speaker.wave.2") }
-        }
-        .frame(width: 480, height: 520)
-    }
-
-    private var general: some View {
         Form {
             Picker(Strings.model, selection: $viewModel.selectedModel) {
                 ForEach(ClaudeModel.allCases) { Text($0.displayName).tag($0) }
@@ -44,8 +71,12 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
     }
+}
 
-    private var appearance: some View {
+struct AppearanceSettings: View {
+    @ObservedObject var preferences: AppPreferences
+
+    var body: some View {
         Form {
             Section {
                 HStack(alignment: .top, spacing: 14) {
@@ -109,7 +140,7 @@ private struct ColorSwatch: View {
 
 // MARK: - Connections
 
-private struct ConnectionsSettings: View {
+struct ConnectionsSettings: View {
     @ObservedObject var preferences: AppPreferences
 
     @State private var definedServers: Set<String> = []

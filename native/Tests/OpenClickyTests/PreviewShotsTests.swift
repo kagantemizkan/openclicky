@@ -50,18 +50,22 @@ final class PreviewShotsTests: XCTestCase {
             .background(panelColor)
             try await save(panel, size: CGSize(width: PanelView.width, height: 400), appearance: appearance, to: "\(directory)/panel-\(name).png")
 
-            let settings = SettingsView(
-                viewModel: viewModel,
-                overlay: viewModel.overlayManager,
-                preferences: viewModel.preferences
-            )
-            .background(panelColor)
-            try await save(settings, size: CGSize(width: 480, height: 520), appearance: appearance, to: "\(directory)/settings-\(name).png")
-
-            let voice = VoiceSettings(viewModel: viewModel, speech: viewModel.textToSpeech, preferences: viewModel.preferences)
-                .frame(width: 480, height: 520)
-                .background(panelColor)
-            try await save(voice, size: CGSize(width: 480, height: 520), appearance: appearance, to: "\(directory)/voice-\(name).png")
+            // The whole real window, title bar and tabs included.
+            let settings = SettingsWindow.make(viewModel: viewModel)
+            settings.appearance = appearance
+            settings.setFrameOrigin(CGPoint(x: -4000, y: -4000))
+            settings.orderFrontRegardless()
+            let tabs = try XCTUnwrap(settings.contentViewController as? NSTabViewController)
+            for (index, tab) in ["general", "appearance", "connections", "voice"].enumerated() {
+                tabs.selectedTabViewItemIndex = index
+                try await Task.sleep(nanoseconds: 600_000_000)
+                let frameView = try XCTUnwrap(settings.contentView?.superview)
+                let rep = try XCTUnwrap(frameView.bitmapImageRepForCachingDisplay(in: frameView.bounds))
+                frameView.cacheDisplay(in: frameView.bounds, to: rep)
+                try rep.representation(using: .png, properties: [:])?
+                    .write(to: URL(fileURLWithPath: "\(directory)/settings-\(tab)-\(name).png"))
+            }
+            settings.orderOut(nil)
 
             let frame = CGRect(x: 0, y: 0, width: 640, height: 240)
             let overlay = OverlayManager()

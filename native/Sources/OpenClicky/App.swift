@@ -191,16 +191,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func openSettings() {
         dismissPanel()
         if settingsWindow == nil {
-            let window = NSWindow(contentViewController: NSHostingController(rootView: SettingsView(
-                viewModel: viewModel,
-                overlay: viewModel.overlayManager,
-                preferences: viewModel.preferences
-            )))
-            window.title = Strings.settingsTitle
-            window.styleMask = [.titled, .closable]
-            window.isReleasedWhenClosed = false
-            window.center()
-            settingsWindow = window
+            settingsWindow = SettingsWindow.make(viewModel: viewModel)
         }
         // A menu bar app has to activate itself for its window to take focus.
         NSApp.activate(ignoringOtherApps: true)
