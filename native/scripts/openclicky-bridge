@@ -1,0 +1,59 @@
+#!/bin/bash
+# Lets a Claude Code session look at the screen and point with OpenClicky.
+#
+#   openclicky-bridge look [screen]
+#       Saves a screenshot and prints its path, width, height and screen.
+#   openclicky-bridge point <x> <y> <imageWidth> <imageHeight> [label] [screen]
+#       Flies the blue pointer to pixel (x, y) of that screenshot.
+#   openclicky-bridge speak <text>
+#       Says the text aloud with the app's voice.
+set -euo pipefail
+
+BRIDGE_DIR="$HOME/Library/Application Support/OpenClicky/bridge"
+SHOT_DIR="$HOME/Library/Application Support/OpenClicky/screenshots"
+MAX_WIDTH=1280
+
+usage() { sed -n '4,9p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+
+case "${1:-}" in
+  look)
+    screen="${2:-1}"
+    mkdir -p "$SHOT_DIR"
+    chmod 700 "$SHOT_DIR"
+    find "$SHOT_DIR" -name '*.jpg' -mmin +60 -delete
+    shot="$SHOT_DIR/$(date +%Y%m%d-%H%M%S)-screen$screen.jpg"
+    screencapture -x -D "$screen" -t jpg "$shot"
+    sips -Z "$MAX_WIDTH" "$shot" >/dev/null
+    width=$(sips -g pixelWidth "$shot" | awk '/pixelWidth/ {print $2}')
+    height=$(sips -g pixelHeight "$shot" | awk '/pixelHeight/ {print $2}')
+    printf '%s\nwidth=%s height=%s screen=%s\n' "$shot" "$width" "$height" "$screen"
+    ;;
+  point)
+    [ "$#" -ge 5 ] || usage
+    [ -d "$BRIDGE_DIR" ] || { echo "OpenClicky is not running (no bridge directory)." >&2; exit 1; }
+    tmp="$(mktemp "$BRIDGE_DIR/.point.XXXXXX")"
+    trap 'rm -f "$tmp"' EXIT
+    /usr/bin/python3 -I -c '
+import json, sys
+x, y, w, h, label, screen = sys.argv[1:7]
+cmd = {"x": float(x), "y": float(y), "imageWidth": int(w), "imageHeight": int(h)}
+if label:
+    cmd["label"] = label
+if screen:
+    cmd["screen"] = int(screen)
+print(json.dumps(cmd))
+' "$2" "$3" "$4" "$5" "${6:-}" "${7:-}" > "$tmp"
+    mv "$tmp" "$BRIDGE_DIR/point.json"
+    ;;
+  speak)
+    [ "$#" -eq 2 ] || usage
+    [ -d "$BRIDGE_DIR" ] || { echo "OpenClicky is not running (no bridge directory)." >&2; exit 1; }
+    tmp="$(mktemp "$BRIDGE_DIR/.speak.XXXXXX")"
+    trap 'rm -f "$tmp"' EXIT
+    printf '%s' "$2" > "$tmp"
+    mv "$tmp" "$BRIDGE_DIR/speak.txt"
+    ;;
+  *)
+    usage
+    ;;
+esac

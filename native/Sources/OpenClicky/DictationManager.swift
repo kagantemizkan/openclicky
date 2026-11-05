@@ -53,6 +53,14 @@ final class DictationManager: NSObject, ObservableObject {
     private let audioEngine = AVAudioEngine()
     private var activeSession: (any TranscriptionSession)?
     private var onFinalTranscript: ((String) -> Void)?
+    private var onEndedWithoutTranscript: (() -> Void)?
+
+    /// Identifies the current start attempt, so one that is still awaiting
+    /// permissions after being cancelled or superseded never opens the mic.
+    private var sessionToken = 0
+    private var isStarting = false
+    /// The push-to-talk key was released before the mic finished starting.
+    private var stopRequestedDuringStart = false
 
     /// Fires when requestFinalTranscript doesn't deliver within the
     /// provider's fallback window — falls back to the latest partial.
@@ -116,17 +124,31 @@ final class DictationManager: NSObject, ObservableObject {
     /// Begins listening. The caller supplies a closure that will be
     /// invoked once, on the main actor, with the final transcript
     /// (either the SFSpeech-delivered final result or, if that never
-    /// arrives in time, the last partial).
-    func startListening(onFinalTranscript: @escaping (String) -> Void) async {
+    /// arrives in time, the last partial). If the session ends with nothing
+    /// to deliver (permission denied, STT error, no speech),
+    /// `onEndedWithoutTranscript` is invoked instead. Neither fires after
+    /// an explicit `cancelListening()`.
+    func startListening(
+        onFinalTranscript: @escaping (String) -> Void,
+        onEndedWithoutTranscript: @escaping () -> Void
+    ) async {
         guard !isBusy else { return }
 
+        sessionToken += 1
+        let token = sessionToken
+        isStarting = true
+        stopRequestedDuringStart = false
         self.onFinalTranscript = onFinalTranscript
+        self.onEndedWithoutTranscript = onEndedWithoutTranscript
         lastErrorMessage = nil
         currentPermissionProblem = nil
         partialTranscript = ""
 
-        guard await requestPermissions() else {
+        let hasPermissions = await requestPermissions()
+        guard token == sessionToken else { return }
+        guard hasPermissions else {
             logger.warning("Mic or speech permission not granted; aborting session")
+            finishWithoutTranscript()
             return
         }
 
@@ -144,16 +166,30 @@ final class DictationManager: NSObject, ObservableObject {
                 },
                 onError: { [weak self] error in
                     Task { @MainActor [weak self] in
-                        self?.logger.error("STT error: \(error.localizedDescription, privacy: .public)")
-                        self?.lastErrorMessage = error.localizedDescription
-                        self?.cancelListening()
+                        guard let self, token == self.sessionToken else { return }
+                        self.logger.error("STT error: \(error.localizedDescription, privacy: .public)")
+                        self.lastErrorMessage = error.localizedDescription
+                        self.finishWithoutTranscript()
                     }
                 }
             )
+            guard token == sessionToken else {
+                session.cancel()
+                return
+            }
             activeSession = session
         } catch {
+            guard token == sessionToken else { return }
             logger.error("Failed to start transcription session: \(error.localizedDescription, privacy: .public)")
             lastErrorMessage = error.localizedDescription
+            finishWithoutTranscript()
+            return
+        }
+
+        // Released during the awaits above: don't open the mic after the
+        // user has already let go of the key.
+        guard !stopRequestedDuringStart else {
+            finishWithoutTranscript()
             return
         }
 
@@ -162,11 +198,14 @@ final class DictationManager: NSObject, ObservableObject {
         } catch {
             logger.error("AVAudioEngine start failed: \(error.localizedDescription, privacy: .public)")
             lastErrorMessage = error.localizedDescription
-            activeSession?.cancel()
-            activeSession = nil
+            // The tap is installed before start(); cancelListening only
+            // removes it from a running engine.
+            audioEngine.inputNode.removeTap(onBus: 0)
+            finishWithoutTranscript()
             return
         }
 
+        isStarting = false
         isRecording = true
     }
 
@@ -174,7 +213,14 @@ final class DictationManager: NSObject, ObservableObject {
     /// final arrives within the provider's fallback window, the latest
     /// partial is used instead.
     func stopListening() {
-        guard isRecording else { return }
+        guard isRecording else {
+            if isStarting {
+                stopRequestedDuringStart = true
+            } else {
+                finishWithoutTranscript()
+            }
+            return
+        }
 
         audioEngine.stop()
         audioEngine.inputNode.removeTap(onBus: 0)
@@ -201,6 +247,10 @@ final class DictationManager: NSObject, ObservableObject {
     /// Aborts the current session without emitting a transcript. Used
     /// when the user cancels or on unrecoverable STT errors.
     func cancelListening() {
+        sessionToken += 1
+        isStarting = false
+        stopRequestedDuringStart = false
+        onEndedWithoutTranscript = nil
         finalizeFallbackWorkItem?.cancel()
         finalizeFallbackWorkItem = nil
 
@@ -219,6 +269,14 @@ final class DictationManager: NSObject, ObservableObject {
 
     // MARK: - Internals
 
+    /// Tears the session down and tells the caller nothing is coming, so
+    /// it doesn't wait forever for a transcript.
+    private func finishWithoutTranscript() {
+        let callback = onEndedWithoutTranscript
+        cancelListening()
+        callback?()
+    }
+
     private func deliverFinalTranscript(_ text: String) {
         guard isFinalizing || isRecording else { return }
         finalizeFallbackWorkItem?.cancel()
@@ -228,7 +286,9 @@ final class DictationManager: NSObject, ObservableObject {
         activeSession = nil
 
         let callback = onFinalTranscript
+        let endedCallback = onEndedWithoutTranscript
         onFinalTranscript = nil
+        onEndedWithoutTranscript = nil
         isRecording = false
         isFinalizing = false
 
@@ -237,6 +297,7 @@ final class DictationManager: NSObject, ObservableObject {
             callback?(trimmed)
         } else {
             logger.info("Empty final transcript; skipping callback")
+            endedCallback?()
         }
     }
 

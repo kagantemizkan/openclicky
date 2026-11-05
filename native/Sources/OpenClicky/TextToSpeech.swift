@@ -1,12 +1,14 @@
 //
 //  TextToSpeech.swift
-//  Speaks Claude's reply. Two backends, picked automatically at init:
+//  Speaks Claude's reply. Three backends, tried in this order:
 //
 //    1. ElevenLabs — if ElevenLabsConfig.load() returns a key (env var
 //       or JSON file). Streams MP3 from the text-to-speech API and
-//       plays via AVAudioPlayer. Falls back to AVSpeech on any error.
-//    2. AVSpeechSynthesizer — default, zero-config, uses the user's
-//       Spoken Content system voice.
+//       plays via AVAudioPlayer. Falls back on any error.
+//    2. Ahenk Cep — local Turkish model, for Turkish text only, when
+//       installed by scripts/setup-ahenk. Falls back on any error.
+//    3. AVSpeechSynthesizer — default, zero-config, picks an installed
+//       voice for the text's language.
 //
 //  Backend selection is sticky for the lifetime of the process; users
 //  who add/remove the key need to quit + relaunch (same shape as the
@@ -15,6 +17,7 @@
 
 import AVFoundation
 import Foundation
+import NaturalLanguage
 import os
 
 @MainActor
@@ -39,11 +42,20 @@ final class TextToSpeech: NSObject, ObservableObject {
     private var audioPlayerDelegate: AudioPlayerCompletionBridge?
     private var playerContinuation: CheckedContinuation<Void, Never>?
 
+    // Ahenk Cep path
+    private let ahenk = AhenkTTSClient.installed()
+    /// Bumped by stop() and speak(), so audio that finishes synthesizing
+    /// after being cancelled or replaced is dropped instead of played.
+    private var speechGeneration = 0
+
     /// Human-readable label for the footer / diagnostics. Honest about
     /// which backend is actually active so users can tell without
     /// wading through logs.
     var activeBackendDisplayName: String {
-        elevenLabsConfig == nil ? "macOS Speech" : "ElevenLabs (\(elevenLabsConfig!.voiceId.prefix(8))…)"
+        if let elevenLabsConfig {
+            return "ElevenLabs (\(elevenLabsConfig.voiceId.prefix(8))…)"
+        }
+        return ahenk == nil ? "macOS Speech" : "Ahenk Cep + macOS Speech"
     }
 
     override init() {
@@ -51,6 +63,12 @@ final class TextToSpeech: NSObject, ObservableObject {
         super.init()
         synthesizer.delegate = self
         logger.info("TTS backend: \(self.activeBackendDisplayName, privacy: .public)")
+    }
+
+    /// Loads the local voice so the first reply doesn't wait for it.
+    func warmUpLocalVoice() {
+        guard elevenLabsConfig == nil, let ahenk else { return }
+        DispatchQueue.global(qos: .utility).async { ahenk.warmUp() }
     }
 
     /// Re-reads ElevenLabsConfig from all three sources (env, Keychain,
@@ -72,6 +90,7 @@ final class TextToSpeech: NSObject, ObservableObject {
         guard !trimmed.isEmpty else { return }
 
         stop() // replace any in-flight utterance
+        let generation = speechGeneration
 
         if let config = elevenLabsConfig {
             do {
@@ -86,12 +105,26 @@ final class TextToSpeech: NSObject, ObservableObject {
                 logger.warning("ElevenLabs TTS failed, falling back to AVSpeech: \(description, privacy: .public)")
                 lastBackendError = "ElevenLabs: \(description)"
             }
+        } else if let ahenk, SpeechVoicePicker.isTurkish(trimmed) {
+            do {
+                let wav = try await ahenk.synthesize(trimmed)
+                guard generation == speechGeneration else { return }
+                try await playAudio(wav)
+                lastBackendError = nil
+                return
+            } catch {
+                guard generation == speechGeneration else { return }
+                let description = error.localizedDescription
+                logger.warning("Ahenk TTS failed, falling back to AVSpeech: \(description, privacy: .public)")
+                lastBackendError = "Ahenk: \(description)"
+            }
         }
         await speakViaSystem(trimmed)
     }
 
     /// Cancels any in-flight utterance.
     func stop() {
+        speechGeneration += 1
         if synthesizer.isSpeaking {
             synthesizer.stopSpeaking(at: .immediate)
             resume(&synthContinuation)
@@ -107,6 +140,7 @@ final class TextToSpeech: NSObject, ObservableObject {
 
     private func speakViaSystem(_ text: String) async {
         let utterance = AVSpeechUtterance(string: text)
+        utterance.voice = SpeechVoicePicker.voice(for: text)
         await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
             synthContinuation = cont
             isSpeaking = true
@@ -180,6 +214,33 @@ final class TextToSpeech: NSObject, ObservableObject {
         guard let c = continuation else { return }
         continuation = nil
         c.resume()
+    }
+}
+
+// MARK: - Voice selection
+
+/// Picks an on-device voice matching the language of the text, so a Turkish
+/// reply is read by a Turkish voice and an English one by an English voice.
+/// Prefers the highest-quality installed voice, so downloading an enhanced
+/// voice in System Settings takes effect without further configuration.
+enum SpeechVoicePicker {
+    static func languageCode(of text: String) -> String? {
+        NLLanguageRecognizer.dominantLanguage(for: text)?.rawValue
+    }
+
+    /// The recognizer is unreliable on a few words, so letters that only
+    /// Turkish uses among the languages this app speaks settle it first.
+    static func isTurkish(_ text: String) -> Bool {
+        text.rangeOfCharacter(from: CharacterSet(charactersIn: "ğĞıİşŞ")) != nil
+            || languageCode(of: text) == "tr"
+    }
+
+    /// Nil lets AVSpeech use the system default voice.
+    static func voice(for text: String) -> AVSpeechSynthesisVoice? {
+        guard let code = isTurkish(text) ? "tr" : languageCode(of: text) else { return nil }
+        return AVSpeechSynthesisVoice.speechVoices()
+            .filter { $0.language == code || $0.language.hasPrefix("\(code)-") }
+            .max { $0.quality.rawValue < $1.quality.rawValue }
     }
 }
 

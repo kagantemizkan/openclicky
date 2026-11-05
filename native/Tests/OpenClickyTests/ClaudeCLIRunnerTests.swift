@@ -44,21 +44,14 @@ final class ClaudeCLIRunnerTests: XCTestCase {
         XCTAssertTrue(args.contains("--disable-slash-commands"))
         XCTAssertTrue(args.contains("--strict-mcp-config"))
         XCTAssertEqual(flagValue(args, "--mcp-config"), #"{"mcpServers":{}}"#)
-        XCTAssertEqual(flagValue(args, "--permission-mode"), "bypassPermissions")
         XCTAssertTrue(args.contains("--exclude-dynamic-system-prompt-sections"))
     }
 
-    func testBuildArgsDisallowsWritingTools() {
+    func testBuildArgsDisablesAllToolsWithoutBypassingPermissions() {
         let args = runner.buildArgs(systemPrompt: "x", model: "sonnet", resumeSessionId: nil)
-        // --disallowedTools must appear and the dangerous tool names must follow it.
-        guard let disallowIdx = args.firstIndex(of: "--disallowedTools") else {
-            return XCTFail("--disallowedTools flag missing")
-        }
-        let following = Array(args.suffix(from: args.index(after: disallowIdx)))
-        for toolName in ["Task", "Bash", "Edit", "Read", "Write", "Glob", "Grep",
-                         "NotebookEdit", "WebFetch", "WebSearch", "Skill"] {
-            XCTAssertTrue(following.contains(toolName), "disallowedTools must include \(toolName)")
-        }
+        XCTAssertEqual(flagValue(args, "--tools"), "", "an empty allowlist disables every built-in tool")
+        XCTAssertFalse(args.contains("--permission-mode"), "no tools means nothing to bypass")
+        XCTAssertFalse(args.contains("--disallowedTools"))
     }
 
     // MARK: - Forbidden flags

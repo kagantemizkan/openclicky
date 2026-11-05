@@ -1,0 +1,35 @@
+#!/bin/bash
+# Installs the local Turkish voice (Ahenk Cep) that TextToSpeech uses.
+# Versions and the model revision are pinned, because the model's Python
+# file is downloaded code that runs on this Mac.
+#
+# Voice: Ahenk (https://github.com/ozguradmin/ahenk-turkish-tts), CC BY 4.0.
+# Data: Alania Turkish Synthetic Speech and Alania Turkish Domain Text by
+# PatientDesk AI (CC BY 4.0).
+set -euo pipefail
+
+AHENK_DIR="${1:-$HOME/Library/Application Support/OpenClicky/ahenk}"
+REPO_COMMIT=8981df9354a6dc95a3a2b4730b7fbff196dda219
+MODEL_REVISION=345c4cbb934815fa96ffd0d5061fd913237544bc
+
+command -v uv >/dev/null || { echo "uv is required: brew install uv" >&2; exit 1; }
+
+mkdir -p "$AHENK_DIR"
+chmod 700 "$AHENK_DIR"
+uv venv --quiet --allow-existing --python 3.12 "$AHENK_DIR/venv"
+uv pip install --quiet --python "$AHENK_DIR/venv/bin/python" \
+  torch==2.15.0 ema-lightning==1.1.2 soundfile==0.14.0 numpy==2.5.4 huggingface-hub==2.4.0 \
+  "git+https://github.com/ozguradmin/ahenk-turkish-tts@$REPO_COMMIT"
+
+"$AHENK_DIR/venv/bin/python" -I - "$AHENK_DIR/model" "$MODEL_REVISION" <<'PY'
+import sys
+from huggingface_hub import snapshot_download
+snapshot_download(
+    "ozgurguler/ahenk-cep-tr",
+    revision=sys.argv[2],
+    allow_patterns=["*.pt", "ahenk_cep.py"],
+    local_dir=sys.argv[1],
+)
+PY
+
+du -sh "$AHENK_DIR"

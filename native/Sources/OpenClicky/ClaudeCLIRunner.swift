@@ -207,10 +207,13 @@ final class ClaudeCLIRunner {
         var finalCostUSD: Double? = nil
         var finalDurationMs: Int? = nil
 
+        var replyComplete = false
+        let startedAt = Date()
+
         let lineStream = Self.makeLineStream(reading: stdoutPipe.fileHandleForReading)
 
         do {
-            for try await line in lineStream {
+            readLoop: for try await line in lineStream {
                 try Task.checkCancellation()
                 guard let event = parseJSON(line) else { continue }
 
@@ -225,6 +228,14 @@ final class ClaudeCLIRunner {
                     if let delta = event.textDelta {
                         accumulatedText += delta
                         onChunk(ClaudeCLIStreamChunk(accumulatedText: accumulatedText, isFinal: false, totalCostUSD: nil))
+                    }
+                    // With no tools there is exactly one message, so the reply
+                    // is complete here. The CLI then spends ~3 s on a post-turn
+                    // summary before its result event; the session is already
+                    // saved and resumes fine, so don't keep the user waiting.
+                    if event.isMessageStop, !accumulatedText.isEmpty {
+                        replyComplete = true
+                        break readLoop
                     }
 
                 case "result":
@@ -242,6 +253,19 @@ final class ClaudeCLIRunner {
             process.terminate()
             stderrPipe.fileHandleForReading.readabilityHandler = nil
             throw ClaudeCLIError.cancelled
+        }
+
+        if replyComplete {
+            process.terminate()
+            stderrPipe.fileHandleForReading.readabilityHandler = nil
+            logger.info("Claude reply complete after \(Date().timeIntervalSince(startedAt), format: .fixed(precision: 1), privacy: .public)s")
+            onChunk(ClaudeCLIStreamChunk(accumulatedText: accumulatedText, isFinal: true, totalCostUSD: nil))
+            return ClaudeCLIRunResult(
+                text: accumulatedText,
+                sessionId: sessionId,
+                totalCostUSD: nil,
+                durationMs: nil
+            )
         }
 
         process.waitUntilExit()
@@ -288,11 +312,10 @@ final class ClaudeCLIRunner {
             "--disable-slash-commands",
             "--strict-mcp-config",
             "--mcp-config", "{\"mcpServers\":{}}",
-            "--permission-mode", "bypassPermissions",
             "--exclude-dynamic-system-prompt-sections",
-            "--disallowedTools",
-            "Task", "Bash", "Edit", "Read", "Write", "Glob", "Grep",
-            "NotebookEdit", "WebFetch", "WebSearch", "Skill",
+            // An empty allowlist, not a denylist: a tool added by a future
+            // CLI release can't become available to this process.
+            "--tools", "",
         ]
         if let resume = resumeSessionId {
             args.append(contentsOf: ["--resume", resume])
@@ -350,6 +373,7 @@ final class ClaudeCLIRunner {
             sessionId: obj["session_id"] as? String,
             apiKeySource: obj["apiKeySource"] as? String,
             textDelta: extractTextDelta(from: obj),
+            isMessageStop: (obj["event"] as? [String: Any])?["type"] as? String == "message_stop",
             totalCostUSD: obj["total_cost_usd"] as? Double,
             durationMs: obj["duration_ms"] as? Int
         )
@@ -403,6 +427,7 @@ private struct ParsedEvent {
     let sessionId: String?
     let apiKeySource: String?
     let textDelta: String?
+    let isMessageStop: Bool
     let totalCostUSD: Double?
     let durationMs: Int?
 }

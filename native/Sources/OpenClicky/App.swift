@@ -62,6 +62,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var keyEventMonitor: Any?
     private var globalKeyEventMonitor: Any?
     private let viewModel = OpenClickyViewModel()
+    private var sessionBridge: SessionBridge?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -85,6 +86,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // thinking / speaking). Piggybacks on Accessibility, already
         // granted for the push-to-talk CGEvent tap.
         installGlobalEscapeMonitor()
+        let overlayManager = viewModel.overlayManager
+        let textToSpeech = viewModel.textToSpeech
+        let bridge = SessionBridge(
+            onTarget: { target in overlayManager.flyTo(target) },
+            onSpeak: { text in Task { await textToSpeech.speak(text) } }
+        )
+        bridge.start()
+        sessionBridge = bridge
+        textToSpeech.warmUpLocalVoice()
         Task { await viewModel.refreshClaudeCLIStatus() }
     }
 

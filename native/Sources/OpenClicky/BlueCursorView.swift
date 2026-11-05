@@ -1,21 +1,17 @@
 //
 //  BlueCursorView.swift
-//  Blue glowing companion that lives on every connected display.
+//  Blue macOS-style pointer that appears on a display only while
+//  Claude is pointing at something.
 //
 //  Behaviour:
-//    - Always-on: fades in on first appearance and follows the user's
-//      mouse at 60 Hz with a spring animation. Sits at a +35, +25
-//      offset so it reads as a companion beside the cursor rather
-//      than a pointer on top of it.
-//    - State-aware: at the same cursor spot, renders the triangle in
-//      idle / speaking, a waveform during listening (push-to-talk),
-//      and a spinner while Claude is thinking. All three cross-fade
-//      via opacity so SwiftUI never removes/re-inserts them.
+//    - Hidden at rest: nothing follows the mouse. The status indicators
+//      (waveform while listening, spinner while thinking, reply bubble)
+//      still sit beside the real pointer at a +35, +25 offset.
 //    - POINT flight: when OverlayManager publishes an activeTarget
-//      for this screen, the buddy pauses mouse-following, flies along
-//      a quadratic Bézier arc to the target (tangent rotation + scale
-//      pulse), shows a label chip for 3 s, flies back, and resumes
-//      following.
+//      for this screen, the blue arrow fades in at the real pointer,
+//      flies along a quadratic Bézier arc so its tip lands on the
+//      target, and shows a label chip for at least 3 s and until the
+//      reply has been spoken, then fades out in place.
 //    - Per-screen exclusivity: only the display whose frame contains
 //      NSEvent.mouseLocation shows the buddy during follow mode; the
 //      target display takes over during POINT flight.
@@ -27,6 +23,7 @@
 //
 
 import AppKit
+import CoreImage
 import SwiftUI
 import os
 
@@ -66,8 +63,10 @@ struct BlueCursorView: View {
 
     // Flight state (POINT animation).
     @State private var mode: BuddyMode = .followingCursor
-    @State private var triangleRotationDegrees: Double = -35
-    @State private var flightScale: CGFloat = 1
+    @State private var arrowOpacity: Double = 0
+    /// Bumped whenever a flight starts or aborts, so the delayed fade-out
+    /// of an older POINT can't cut a newer one short.
+    @State private var pointingGeneration = 0
     @State private var chipText: String? = nil
     @State private var chipOpacity: Double = 0
     @State private var chipScale: CGFloat = 1
@@ -102,50 +101,35 @@ struct BlueCursorView: View {
             // to zero when the cursor is off-screen).
             Color.black.opacity(0.001)
 
-            // Triangle — shown during idle + speaking (TTS playing) at
-            // the mouse position. During POINT flight, same triangle is
-            // reused but rotated along the arc tangent.
-            Triangle()
-                .fill(
-                    LinearGradient(
-                        colors: [Color.blue.opacity(0.95), Color.blue.opacity(0.65)],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                )
-                .frame(width: 22, height: 22)
-                .rotationEffect(.degrees(triangleRotationDegrees))
-                .scaleEffect(flightScale)
-                .shadow(color: .blue.opacity(0.55), radius: 8 + (flightScale - 1) * 20)
-                .opacity(buddyVisibleOnThisScreen && showsTriangle ? cursorOpacity : 0)
-                .position(cursorPosition)
-                .animation(
-                    mode == .followingCursor
-                        ? .spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0)
-                        : nil,
-                    value: cursorPosition
-                )
-                .animation(.easeIn(duration: 0.25), value: manager.voiceState)
-                .animation(
-                    mode == .navigatingToTarget ? nil : .easeInOut(duration: 0.3),
-                    value: triangleRotationDegrees
+            // Blue system arrow — only while flying to / parked at a
+            // POINT target. Offset by the hot spot so the arrow's tip,
+            // not the image centre, sits on cursorPosition.
+            Image(nsImage: BlueArrowCursor.image)
+                .opacity(mode == .followingCursor ? 0 : arrowOpacity)
+                .position(
+                    x: cursorPosition.x + BlueArrowCursor.image.size.width / 2 - BlueArrowCursor.hotSpot.x,
+                    y: cursorPosition.y + BlueArrowCursor.image.size.height / 2 - BlueArrowCursor.hotSpot.y
                 )
 
             // Waveform — shown only while the user is holding the
             // push-to-talk shortcut (voiceState == .listening).
-            BlueCursorWaveformView(audioLevel: manager.audioLevel)
-                .opacity(buddyVisibleOnThisScreen && manager.voiceState == .listening ? cursorOpacity : 0)
-                .position(cursorPosition)
-                .animation(.spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0), value: cursorPosition)
-                .animation(.easeIn(duration: 0.15), value: manager.voiceState)
+            // Mounted only while shown: its TimelineView would otherwise
+            // keep redrawing at 36 Hz with opacity 0.
+            if buddyVisibleOnThisScreen && manager.voiceState == .listening {
+                BlueCursorWaveformView(audioLevel: manager.audioLevel)
+                    .opacity(cursorOpacity)
+                    .position(cursorPosition)
+                    .animation(.spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0), value: cursorPosition)
+            }
 
             // Spinner — shown while Claude is thinking (screenshot +
-            // CLI roundtrip). Cross-fades with triangle/waveform.
-            BlueCursorSpinnerView()
-                .opacity(buddyVisibleOnThisScreen && manager.voiceState == .thinking ? cursorOpacity : 0)
-                .position(cursorPosition)
-                .animation(.spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0), value: cursorPosition)
-                .animation(.easeIn(duration: 0.15), value: manager.voiceState)
+            // CLI roundtrip). Mounted only while shown, as above.
+            if buddyVisibleOnThisScreen && manager.voiceState == .thinking {
+                BlueCursorSpinnerView()
+                    .opacity(cursorOpacity)
+                    .position(cursorPosition)
+                    .animation(.spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0), value: cursorPosition)
+            }
 
             // Streaming response bubble — follows the buddy. Visible
             // whenever Claude has produced any reply text AND we're not
@@ -215,15 +199,6 @@ struct BlueCursorView: View {
         }
     }
 
-    /// Which shape sits at the cursor right now. Waveform + spinner are
-    /// handled as separate overlays; this flag only gates the triangle.
-    private var showsTriangle: Bool {
-        switch manager.voiceState {
-        case .idle, .speaking: return true
-        case .listening, .thinking: return mode != .followingCursor
-        }
-    }
-
     // MARK: - Cursor tracking
 
     private func startTrackingCursor() {
@@ -249,63 +224,78 @@ struct BlueCursorView: View {
     private func handleTargetChange(_ target: BlueCursorTarget?) {
         guard let target else {
             Self.log.info("handleTargetChange: nil (clear) on screenFrame=\(String(describing: self.screenFrame), privacy: .public)")
+            abortPointing()
             return
         }
         let matches = matchesThisScreen(target.displayFrame)
         Self.log.info("handleTargetChange: target.displayFrame=\(String(describing: target.displayFrame), privacy: .public) screenFrame=\(String(describing: self.screenFrame), privacy: .public) matches=\(matches, privacy: .public)")
-        guard matches else { return }
+        guard matches else {
+            // The new target belongs to another display: never leave a
+            // second arrow parked here.
+            abortPointing()
+            return
+        }
 
-        let startView = cursorPosition
+        // Start from the real pointer so the arrow appears to peel off it.
+        let startView = convertGlobalToView(NSEvent.mouseLocation)
         let endView = convertGlobalToView(target.globalLocation)
 
+        pointingGeneration += 1
+        let generation = pointingGeneration
+        cursorPosition = startView
         mode = .navigatingToTarget
         chipText = nil
         chipOpacity = 0
         chipScale = 0.5
+        withAnimation(.easeIn(duration: 0.15)) {
+            arrowOpacity = 1
+        }
 
         animateBezier(from: startView, to: endView, duration: flightDuration(from: startView, to: endView)) {
-            enterPointingAt(target)
+            enterPointingAt(target, generation: generation)
         }
     }
 
-    private func enterPointingAt(_ target: BlueCursorTarget) {
+    private func enterPointingAt(_ target: BlueCursorTarget, generation: Int) {
         mode = .pointingAtTarget
-        triangleRotationDegrees = -35
-        flightScale = 1
         chipText = target.label ?? "here"
         chipScale = 1
         chipOpacity = 1
 
-        // Hold for 3 s, fade chip, fly back.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
-            guard mode == .pointingAtTarget else { return }
+        fadeOutWhenDone(generation: generation, after: 3.0)
+    }
+
+    /// Holds for at least `delay` and for as long as the reply is being
+    /// spoken, then fades out in place.
+    private func fadeOutWhenDone(generation: Int, after delay: TimeInterval) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+            guard generation == pointingGeneration, mode == .pointingAtTarget else { return }
+            if manager.voiceState == .speaking {
+                fadeOutWhenDone(generation: generation, after: 0.25)
+                return
+            }
             chipOpacity = 0
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                guard mode == .pointingAtTarget else { return }
-                flyBackToCursor()
+            withAnimation(.easeOut(duration: 0.3)) {
+                arrowOpacity = 0
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                guard generation == pointingGeneration, mode == .pointingAtTarget else { return }
+                mode = .followingCursor
+                manager.clearTargetIfMatches(target: screenFrame)
             }
         }
     }
 
-    private func flyBackToCursor() {
-        let start = cursorPosition
-        let mouse = NSEvent.mouseLocation
-        let local = convertGlobalToView(mouse)
-        let end = CGPoint(
-            x: local.x + Self.cursorFollowOffset.x,
-            y: local.y + Self.cursorFollowOffset.y
-        )
-
-        mode = .navigatingToTarget
+    /// Drops any flight or parked arrow on this display immediately.
+    private func abortPointing() {
+        guard mode != .followingCursor else { return }
+        pointingGeneration += 1
+        flightTimer?.invalidate()
+        flightTimer = nil
+        arrowOpacity = 0
         chipText = nil
         chipOpacity = 0
-
-        animateBezier(from: start, to: end, duration: flightDuration(from: start, to: end)) {
-            triangleRotationDegrees = -35
-            flightScale = 1
-            mode = .followingCursor
-            manager.clearTargetIfMatches(target: screenFrame)
-        }
+        mode = .followingCursor
     }
 
     private func animateBezier(
@@ -327,17 +317,11 @@ struct BlueCursorView: View {
             let t = smoothstep(rawT)
 
             cursorPosition = quadraticBezier(t: t, start: start, control: control, end: end)
-            let tangent = bezierTangent(t: t, start: start, control: control, end: end)
-            // atan2 returns 0° for rightward travel; triangle tip points
-            // up at 0° rotation, so add 90° to face direction of travel.
-            triangleRotationDegrees = atan2(tangent.y, tangent.x) * 180 / .pi + 90
-            flightScale = 1 + 0.3 * sin(rawT * .pi)
 
             if rawT >= 1.0 {
                 timer.invalidate()
                 flightTimer = nil
                 cursorPosition = end
-                flightScale = 1
                 onComplete()
             }
         }
@@ -405,14 +389,6 @@ struct BlueCursorView: View {
         )
     }
 
-    private func bezierTangent(t: Double, start: CGPoint, control: CGPoint, end: CGPoint) -> CGPoint {
-        let u = 1 - t
-        return CGPoint(
-            x: 2*u*(control.x - start.x) + 2*t*(end.x - control.x),
-            y: 2*u*(control.y - start.y) + 2*t*(end.y - control.y)
-        )
-    }
-
     /// AppKit global (bottom-left origin) → SwiftUI view-local (top-left).
     private func convertGlobalToView(_ globalPoint: CGPoint) -> CGPoint {
         let localX = globalPoint.x - screenFrame.origin.x
@@ -421,18 +397,29 @@ struct BlueCursorView: View {
     }
 }
 
-// MARK: - Triangle shape
+// MARK: - Blue system arrow
 
-struct Triangle: Shape {
-    func path(in rect: CGRect) -> Path {
-        var path = Path()
-        let size = min(rect.width, rect.height)
-        let height = size * sqrt(3.0) / 2.0
-        path.move(to: CGPoint(x: rect.midX, y: rect.midY - height / 1.5))
-        path.addLine(to: CGPoint(x: rect.midX - size / 2, y: rect.midY + height / 3))
-        path.addLine(to: CGPoint(x: rect.midX + size / 2, y: rect.midY + height / 3))
-        path.closeSubpath()
-        return path
+/// The real macOS arrow cursor recoloured blue: black fill → blue, white
+/// outline stays white. Using `NSCursor.arrow` keeps the shape identical
+/// to the system pointer instead of approximating it with a hand-drawn path.
+enum BlueArrowCursor {
+    static let hotSpot = NSCursor.arrow.hotSpot
+    static let image = makeImage()
+
+    private static func makeImage() -> NSImage {
+        let source = NSCursor.arrow.image
+        guard let cgImage = source.cgImage(forProposedRect: nil, context: nil, hints: nil),
+              let filter = CIFilter(name: "CIFalseColor") else {
+            return source
+        }
+        filter.setValue(CIImage(cgImage: cgImage), forKey: kCIInputImageKey)
+        filter.setValue(CIColor(red: 0, green: 0.48, blue: 1), forKey: "inputColor0")
+        filter.setValue(CIColor(red: 1, green: 1, blue: 1), forKey: "inputColor1")
+        guard let output = filter.outputImage,
+              let tinted = CIContext().createCGImage(output, from: output.extent) else {
+            return source
+        }
+        return NSImage(cgImage: tinted, size: source.size)
     }
 }
 

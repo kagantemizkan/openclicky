@@ -85,12 +85,15 @@ final class AppleSpeechTranscriptionProvider: TranscriptionProvider {
         )
     }
 
-    /// Tries the user's current locale first, then en-US, then the
-    /// default recognizer — most users don't change Speech framework
-    /// language, so "current" wins.
+    /// The user's system languages in order, then en-US. Not Locale.current:
+    /// this app ships only an English localization, so on a Turkish Mac that
+    /// is en_TR, and Turkish speech would be transcribed as English.
+    static func recognizerLocales(preferredLanguages: [String]) -> [Locale] {
+        (preferredLanguages + ["en-US"]).map { Locale(identifier: $0) }
+    }
+
     private static func bestAvailableSpeechRecognizer() -> SFSpeechRecognizer? {
-        let preferredLocales = [Locale.autoupdatingCurrent, Locale(identifier: "en-US")]
-        for locale in preferredLocales {
+        for locale in recognizerLocales(preferredLanguages: Locale.preferredLanguages) {
             if let recognizer = SFSpeechRecognizer(locale: locale) {
                 return recognizer
             }

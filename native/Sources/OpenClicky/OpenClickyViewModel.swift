@@ -22,8 +22,8 @@ enum CompanionState: Equatable {
 /// Sonnet is the default (fast, vision-capable); Opus is the opt-in
 /// heavier brain for harder reasoning turns.
 enum ClaudeModel: String, CaseIterable, Identifiable {
-    case sonnet = "claude-sonnet-4-6"
-    case opus = "claude-opus-4-6"
+    case sonnet = "claude-sonnet-5-5"
+    case opus = "claude-opus-5-5"
 
     var id: String { rawValue }
     var displayName: String {
@@ -167,12 +167,24 @@ final class OpenClickyViewModel: ObservableObject {
         }
     }
 
+    /// English name of the user's first system language, e.g. "Turkish".
+    private static var userLanguageName: String {
+        let code = Locale.preferredLanguages.first
+            .flatMap { Locale(identifier: $0).language.languageCode?.identifier } ?? "en"
+        return Locale(identifier: "en_US").localizedString(forLanguageCode: code) ?? "English"
+    }
+
     /// System prompt for the OpenClicky persona. Kept tight so the CLI's
     /// input tokens stay low while still carrying the POINT tag contract
     /// the panel parses on every reply.
     static let systemPrompt: String = """
     you're OpenClicky, a friendly screen-aware companion. the user is looking at their mac \
-    screen. reply in one or two sentences, lowercase, warm, conversational. your name is \
+    screen. the user's language is \(userLanguageName). reply in it, using its correct \
+    letters, unless they clearly speak another language. their words usually come from \
+    speech recognition and can be misheard: infer what they meant from the screen and \
+    context, and if it's a meaningless fragment, briefly ask them to repeat it. never \
+    switch language because of a garbled transcript. reply in one or two sentences, lowercase, \
+    warm, conversational. your name is \
     OpenClicky, written exactly that way with the capital O and C — introduce yourself as \
     "hey, i'm OpenClicky" when a greeting is appropriate; every other word stays lowercase. \
     no emojis, no bullet lists, no markdown. reference specific things on screen when \
@@ -247,10 +259,25 @@ final class OpenClickyViewModel: ObservableObject {
         lastError = nil
         streamingText = ""
         Task { @MainActor in
-            await dictationManager.startListening { [weak self] transcript in
-                self?.runTurnFromVoice(userPrompt: transcript)
-            }
+            await dictationManager.startListening(
+                onFinalTranscript: { [weak self] transcript in
+                    self?.runTurnFromVoice(userPrompt: transcript)
+                },
+                onEndedWithoutTranscript: { [weak self] in
+                    self?.handleDictationEndedWithoutTranscript()
+                }
+            )
         }
+    }
+
+    /// Without this, `state` stays .listening/.thinking forever and the
+    /// spinner never stops when dictation fails or hears nothing.
+    private func handleDictationEndedWithoutTranscript() {
+        guard state == .listening || state == .thinking,
+              !isRunningTurn, pendingDispatch == nil else { return }
+        logger.info("Dictation ended without a transcript; returning to idle")
+        state = .idle
+        lastError = dictationManager.lastErrorMessage
     }
 
     private func finishListening() {
@@ -372,13 +399,10 @@ final class OpenClickyViewModel: ObservableObject {
 
                 if thenSpeak {
                     state = .speaking
-                    await textToSpeech.speak(parsed.spokenText)
                 }
 
-                guard self.turnGeneration == thisTurn, !Task.isCancelled else { return }
-
-                // Fire the overlay AFTER TTS so the user hears
-                // "look at the save button" *before* the cursor moves.
+                // Fly as the speech starts, so "click here" and the arrow
+                // land together. The arrow holds while state is .speaking.
                 if let mapped {
                     overlayManager.flyTo(BlueCursorTarget(
                         globalLocation: mapped.globalLocation,
@@ -386,6 +410,12 @@ final class OpenClickyViewModel: ObservableObject {
                         label: mapped.label
                     ))
                 }
+
+                if thenSpeak {
+                    await textToSpeech.speak(parsed.spokenText)
+                }
+
+                guard self.turnGeneration == thisTurn, !Task.isCancelled else { return }
 
                 if self.turnGeneration == thisTurn {
                     state = .idle
