@@ -1,24 +1,77 @@
 //
 //  TextToSpeech.swift
-//  Speaks Claude's reply. Three backends, tried in this order:
+//  Speaks Claude's reply with the voices the user turned on, in the order
+//  they chose. Each is skipped if it can't read this text and passed over if
+//  it fails, so a used-up ElevenLabs key just moves on to the next voice.
 //
-//    1. ElevenLabs — if ElevenLabsConfig.load() returns a key (env var
-//       or JSON file). Streams MP3 from the text-to-speech API and
-//       plays via AVAudioPlayer. Falls back on any error.
-//    2. Ahenk Cep — local Turkish model, for Turkish text only, when
-//       installed by scripts/setup-ahenk. Falls back on any error.
-//    3. AVSpeechSynthesizer — default, zero-config, picks an installed
-//       voice for the text's language.
-//
-//  Backend selection is sticky for the lifetime of the process; users
-//  who add/remove the key need to quit + relaunch (same shape as the
-//  Screen Recording TCC quit-and-relaunch requirement).
+//    ElevenLabs — needs an API key (env var, Keychain or JSON file). Fetches
+//       MP3 from the text-to-speech API and plays via AVAudioPlayer.
+//    Ahenk Cep — local Turkish model, for Turkish text only, when installed
+//       by scripts/setup-ahenk.
+//    macOS — AVSpeechSynthesizer, picks an installed voice for the text's
+//       language.
 //
 
 import AVFoundation
+import Combine
 import Foundation
 import NaturalLanguage
 import os
+
+/// The order voices are tried in for one reply.
+enum VoiceChain {
+    static func attempts(
+        enabled: [VoiceEngine],
+        isTurkish: Bool,
+        hasElevenLabsKey: Bool,
+        hasAhenk: Bool
+    ) -> [VoiceEngine] {
+        enabled.filter { engine in
+            switch engine {
+            case .elevenLabs: return hasElevenLabsKey
+            case .ahenk: return hasAhenk && isTurkish
+            case .system: return true
+            }
+        }
+    }
+
+    struct Outcome: Equatable {
+        /// Nil if nothing could read it, or it was interrupted.
+        var used: VoiceEngine?
+        /// Why each voice before it didn't.
+        var failures: [String] = []
+        var wasInterrupted = false
+    }
+
+    /// Tries each voice until one finishes. Once `isCurrent` turns false the
+    /// reply was stopped or replaced, so nothing further may play.
+    @MainActor
+    static func run(
+        _ attempts: [VoiceEngine],
+        isCurrent: () -> Bool,
+        speak: (VoiceEngine) async throws -> Void
+    ) async -> Outcome {
+        var outcome = Outcome()
+        for engine in attempts {
+            do {
+                try await speak(engine)
+                guard isCurrent() else {
+                    outcome.wasInterrupted = true
+                    return outcome
+                }
+                outcome.used = engine
+                return outcome
+            } catch {
+                guard isCurrent() else {
+                    outcome.wasInterrupted = true
+                    return outcome
+                }
+                outcome.failures.append("\(engine.displayName): \(error.localizedDescription)")
+            }
+        }
+        return outcome
+    }
+}
 
 @MainActor
 final class TextToSpeech: NSObject, ObservableObject {
@@ -27,11 +80,17 @@ final class TextToSpeech: NSObject, ObservableObject {
 
     @Published private(set) var isSpeaking: Bool = false
 
-    /// Human-readable message set whenever the ElevenLabs backend
-    /// fell back to AVSpeech on the most recent turn. Cleared on
-    /// success. Surfaced in the panel so users can tell why their
-    /// premium voice didn't play without digging through os_log.
+    /// The voice that read the latest reply.
+    @Published private(set) var lastUsedEngine: VoiceEngine?
+
+    /// Why voices were passed over on the latest reply, so users can tell
+    /// why their chosen voice didn't play without digging through os_log.
+    /// Keeps the raw error: 401 means a bad or used-up key, and
+    /// voice_not_found a wrong voice id. Cleared when the first voice works.
     @Published private(set) var lastBackendError: String?
+
+    private let preferences: AppPreferences
+    private var observations: Set<AnyCancellable> = []
 
     // System speech path
     private let synthesizer = AVSpeechSynthesizer()
@@ -48,27 +107,36 @@ final class TextToSpeech: NSObject, ObservableObject {
     /// after being cancelled or replaced is dropped instead of played.
     private var speechGeneration = 0
 
-    /// Human-readable label for the footer / diagnostics. Honest about
-    /// which backend is actually active so users can tell without
-    /// wading through logs.
-    var activeBackendDisplayName: String {
-        if let elevenLabsConfig {
-            return "ElevenLabs (\(elevenLabsConfig.voiceId.prefix(8))…)"
-        }
-        return ahenk == nil ? "macOS Speech" : "Ahenk Cep + macOS Speech"
-    }
+    var isAhenkInstalled: Bool { ahenk != nil }
 
-    override init() {
+    init(preferences: AppPreferences = .shared) {
+        self.preferences = preferences
         self.elevenLabsConfig = ElevenLabsConfig.load()
         super.init()
         synthesizer.delegate = self
-        logger.info("TTS backend: \(self.activeBackendDisplayName, privacy: .public)")
+        preferences.$disabledVoices
+            .dropFirst()
+            .map { !$0.contains(.ahenk) }
+            .removeDuplicates()
+            .sink { [weak self] enabled in self?.setLocalVoiceLoaded(enabled) }
+            .store(in: &observations)
     }
 
-    /// Loads the local voice so the first reply doesn't wait for it.
+    /// Loads the local voice so the first reply, or the first fallback to it,
+    /// doesn't wait for it.
     func warmUpLocalVoice() {
-        guard elevenLabsConfig == nil, let ahenk else { return }
-        DispatchQueue.global(qos: .utility).async { ahenk.warmUp() }
+        setLocalVoiceLoaded(!preferences.disabledVoices.contains(.ahenk))
+    }
+
+    private func setLocalVoiceLoaded(_ loaded: Bool) {
+        guard let ahenk else { return }
+        DispatchQueue.global(qos: .utility).async {
+            if loaded {
+                ahenk.warmUp()
+            } else {
+                ahenk.shutdown()
+            }
+        }
     }
 
     /// Re-reads ElevenLabsConfig from all three sources (env, Keychain,
@@ -77,10 +145,8 @@ final class TextToSpeech: NSObject, ObservableObject {
     /// very next turn — no relaunch required.
     func reloadConfiguration() {
         stop()
-        let previous = elevenLabsConfig?.voiceId
         elevenLabsConfig = ElevenLabsConfig.load()
         lastBackendError = nil
-        logger.info("TTS backend reloaded: \(self.activeBackendDisplayName, privacy: .public) (was voice: \(previous ?? "<system>", privacy: .public))")
     }
 
     /// Speaks `text` and returns when playback finishes (or is cancelled
@@ -89,37 +155,59 @@ final class TextToSpeech: NSObject, ObservableObject {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
+        let attempts = VoiceChain.attempts(
+            enabled: preferences.enabledVoices,
+            isTurkish: SpeechVoicePicker.isTurkish(trimmed),
+            hasElevenLabsKey: elevenLabsConfig != nil,
+            hasAhenk: ahenk != nil
+        )
+        await play(trimmed, attempts: attempts)
+    }
+
+    /// Plays a sample in one voice from Settings, so voices can be compared.
+    func preview(_ engine: VoiceEngine) async {
+        await play(engine == .ahenk ? Strings.voiceSampleTurkish : Strings.voiceSample, attempts: [engine])
+    }
+
+    private func play(_ text: String, attempts: [VoiceEngine]) async {
         stop() // replace any in-flight utterance
         let generation = speechGeneration
-
-        if let config = elevenLabsConfig {
-            do {
-                try await speakViaElevenLabs(trimmed, config: config)
-                lastBackendError = nil
-                return
-            } catch {
-                // Network / API / playback error. Don't leave the user
-                // in silence — fall back to the system voice, and
-                // surface the reason so the panel can show a chip.
-                let description = (error as NSError).localizedDescription
-                logger.warning("ElevenLabs TTS failed, falling back to AVSpeech: \(description, privacy: .public)")
-                lastBackendError = "ElevenLabs: \(description)"
-            }
-        } else if let ahenk, SpeechVoicePicker.isTurkish(trimmed) {
-            do {
-                let wav = try await ahenk.synthesize(trimmed)
-                guard generation == speechGeneration else { return }
-                try await playAudio(wav)
-                lastBackendError = nil
-                return
-            } catch {
-                guard generation == speechGeneration else { return }
-                let description = error.localizedDescription
-                logger.warning("Ahenk TTS failed, falling back to AVSpeech: \(description, privacy: .public)")
-                lastBackendError = "Ahenk: \(description)"
-            }
+        guard !attempts.isEmpty else {
+            lastUsedEngine = nil
+            lastBackendError = Strings.noVoiceForText
+            return
         }
-        await speakViaSystem(trimmed)
+
+        let outcome = await VoiceChain.run(attempts, isCurrent: { generation == speechGeneration }) { engine in
+            try await self.speak(text, with: engine, generation: generation)
+        }
+        guard !outcome.wasInterrupted else { return }
+        for failure in outcome.failures {
+            logger.warning("Voice failed, moving on: \(failure, privacy: .public)")
+        }
+        lastUsedEngine = outcome.used
+        lastBackendError = outcome.failures.isEmpty ? nil : outcome.failures.joined(separator: "\n")
+    }
+
+    private func speak(_ text: String, with engine: VoiceEngine, generation: Int) async throws {
+        var audio: Data?
+        switch engine {
+        case .elevenLabs:
+            guard let config = elevenLabsConfig else { throw AhenkTTSError(message: Strings.voiceNeedsKey) }
+            audio = try await fetchElevenLabsAudio(text: text, config: config)
+        case .ahenk:
+            guard let ahenk else { throw AhenkTTSError(message: Strings.voiceNotInstalled) }
+            audio = try await ahenk.synthesize(text)
+        case .system:
+            break
+        }
+        // Stopped while the audio was being made: it must not start playing.
+        guard generation == speechGeneration else { return }
+        if let audio {
+            try await playAudio(audio)
+        } else {
+            await speakViaSystem(text)
+        }
     }
 
     /// Cancels any in-flight utterance.
@@ -150,14 +238,11 @@ final class TextToSpeech: NSObject, ObservableObject {
 
     // MARK: - ElevenLabs path
 
-    private func speakViaElevenLabs(_ text: String, config: ElevenLabsConfig) async throws {
-        let mp3Data = try await fetchElevenLabsAudio(text: text, config: config)
-        try await playAudio(mp3Data)
-    }
-
     private func fetchElevenLabsAudio(text: String, config: ElevenLabsConfig) async throws -> Data {
         var request = URLRequest(url: URL(string: "https://api.elevenlabs.io/v1/text-to-speech/\(config.voiceId)")!)
         request.httpMethod = "POST"
+        // A stalled network should reach the next voice, not hold up the reply.
+        request.timeoutInterval = 10
         request.setValue(config.apiKey, forHTTPHeaderField: "xi-api-key")
         request.setValue("application/json", forHTTPHeaderField: "content-type")
         request.setValue("audio/mpeg", forHTTPHeaderField: "accept")

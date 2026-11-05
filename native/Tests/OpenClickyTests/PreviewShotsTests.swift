@@ -56,7 +56,12 @@ final class PreviewShotsTests: XCTestCase {
                 preferences: viewModel.preferences
             )
             .background(panelColor)
-            try await save(settings, size: CGSize(width: 480, height: 420), appearance: appearance, to: "\(directory)/settings-\(name).png")
+            try await save(settings, size: CGSize(width: 480, height: 520), appearance: appearance, to: "\(directory)/settings-\(name).png")
+
+            let voice = VoiceSettings(viewModel: viewModel, speech: viewModel.textToSpeech, preferences: viewModel.preferences)
+                .frame(width: 480, height: 520)
+                .background(panelColor)
+            try await save(voice, size: CGSize(width: 480, height: 520), appearance: appearance, to: "\(directory)/voice-\(name).png")
 
             let frame = CGRect(x: 0, y: 0, width: 640, height: 240)
             let overlay = OverlayManager()

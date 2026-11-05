@@ -19,10 +19,10 @@ struct SettingsView: View {
                 .tabItem { Label(Strings.tabAppearance, systemImage: "paintpalette") }
             ConnectionsSettings(preferences: preferences)
                 .tabItem { Label(Strings.tabConnections, systemImage: "link") }
-            VoiceSettings(viewModel: viewModel, preferences: preferences)
+            VoiceSettings(viewModel: viewModel, speech: viewModel.textToSpeech, preferences: preferences)
                 .tabItem { Label(Strings.tabVoice, systemImage: "speaker.wave.2") }
         }
-        .frame(width: 480, height: 420)
+        .frame(width: 480, height: 520)
     }
 
     private var general: some View {
@@ -167,8 +167,9 @@ private struct ConnectionsSettings: View {
 
 // MARK: - Voice
 
-private struct VoiceSettings: View {
+struct VoiceSettings: View {
     @ObservedObject var viewModel: OpenClickyViewModel
+    @ObservedObject var speech: TextToSpeech
     @ObservedObject var preferences: AppPreferences
 
     @State private var apiKey = ""
@@ -184,6 +185,33 @@ private struct VoiceSettings: View {
                 }
             }
             Section {
+                ForEach(Array(preferences.voiceOrder.enumerated()), id: \.element) { index, engine in
+                    voiceRow(engine, position: index)
+                }
+                // The raw error stays actionable: 401 means a bad or used-up
+                // key, and voice_not_found a wrong voice id.
+                if let error = speech.lastBackendError {
+                    Label(error, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .lineLimit(4)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            } header: {
+                Text(Strings.voiceOrder)
+            } footer: {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(Strings.voiceOrderFooter)
+                    if let used = speech.lastUsedEngine {
+                        Text(Strings.voiceLastUsed(used.displayName))
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+            Section {
                 SecureField(Strings.apiKey, text: $apiKey, prompt: Text(verbatim: "sk-…"))
                 TextField(Strings.voiceId, text: $voiceId, prompt: Text(ElevenLabsConfig.defaultVoiceId))
                 HStack {
@@ -197,14 +225,6 @@ private struct VoiceSettings: View {
                     Button(Strings.save, action: save)
                         .disabled(apiKey.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
-                // The raw error stays actionable: 401 means a wrong key, and
-                // voice_not_found a wrong voice id.
-                if let error = viewModel.textToSpeech.lastBackendError {
-                    Label(error, systemImage: "exclamationmark.triangle.fill")
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
             } header: {
                 Text(Strings.voiceSettings)
             } footer: {
@@ -215,6 +235,75 @@ private struct VoiceSettings: View {
         }
         .formStyle(.grouped)
         .onAppear(perform: loadCurrentValues)
+    }
+
+    /// What stops this voice from working now, if anything.
+    private func problem(with engine: VoiceEngine) -> String? {
+        switch engine {
+        case .elevenLabs: return speech.elevenLabsConfig == nil ? Strings.voiceNeedsKey : nil
+        case .ahenk: return speech.isAhenkInstalled ? nil : Strings.voiceNotInstalled
+        case .system: return nil
+        }
+    }
+
+    private func detail(of engine: VoiceEngine) -> String {
+        switch engine {
+        case .elevenLabs: return Strings.voiceElevenLabsDetail
+        case .ahenk: return Strings.voiceAhenkDetail
+        case .system: return Strings.voiceSystemDetail
+        }
+    }
+
+    private func voiceRow(_ engine: VoiceEngine, position: Int) -> some View {
+        let problem = problem(with: engine)
+        let isOn = !preferences.disabledVoices.contains(engine)
+        return HStack(spacing: 10) {
+            VStack(spacing: 0) {
+                Button { preferences.moveVoice(engine, by: -1) } label: {
+                    Image(systemName: "chevron.up").frame(width: 18, height: 14)
+                }
+                .disabled(position == 0)
+                .help(Strings.voiceMoveUp)
+                .accessibilityLabel("\(engine.displayName), \(Strings.voiceMoveUp)")
+                Button { preferences.moveVoice(engine, by: 1) } label: {
+                    Image(systemName: "chevron.down").frame(width: 18, height: 14)
+                }
+                .disabled(position == preferences.voiceOrder.count - 1)
+                .help(Strings.voiceMoveDown)
+                .accessibilityLabel("\(engine.displayName), \(Strings.voiceMoveDown)")
+            }
+            .buttonStyle(.borderless)
+            .font(.system(size: 10, weight: .semibold))
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(verbatim: "\(position + 1). \(engine.displayName)")
+                Text(problem ?? detail(of: engine))
+                    .font(.caption)
+                    .foregroundStyle(problem == nil ? Color.secondary : Color.orange)
+            }
+            .opacity(isOn ? 1 : 0.5)
+
+            Spacer(minLength: 8)
+
+            Button {
+                Task { await speech.preview(engine) }
+            } label: {
+                Image(systemName: "play.circle")
+            }
+            .buttonStyle(.borderless)
+            .disabled(problem != nil)
+            .help(Strings.voiceTry)
+            .accessibilityLabel("\(engine.displayName), \(Strings.voiceTry)")
+
+            Toggle(engine.displayName, isOn: Binding(
+                get: { isOn },
+                set: { preferences.setVoice(engine, enabled: $0) }
+            ))
+            .labelsHidden()
+            .toggleStyle(.switch)
+            .controlSize(.small)
+            .disabled(isOn && preferences.enabledVoices.count == 1)
+        }
     }
 
     private func loadCurrentValues() {

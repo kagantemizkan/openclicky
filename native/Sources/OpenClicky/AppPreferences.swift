@@ -104,6 +104,31 @@ enum ReplyLength: String, CaseIterable, Identifiable {
     }
 }
 
+/// The voices that can read a reply. The user orders them; the first that
+/// can read a reply does, and each failure moves on to the next.
+enum VoiceEngine: String, CaseIterable, Identifiable {
+    case elevenLabs, ahenk, system
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .elevenLabs: return "ElevenLabs"
+        case .ahenk: return "Ahenk Cep"
+        case .system: return Strings.voiceSystem
+        }
+    }
+
+    /// `saved` from older settings: unknown names dropped, new voices added.
+    static func order(saved: [String]?) -> [VoiceEngine] {
+        var order: [VoiceEngine] = []
+        for engine in (saved ?? []).compactMap(VoiceEngine.init) where !order.contains(engine) {
+            order.append(engine)
+        }
+        return order + allCases.filter { !order.contains($0) }
+    }
+}
+
 @MainActor
 final class AppPreferences: ObservableObject {
     static let shared = AppPreferences()
@@ -117,7 +142,35 @@ final class AppPreferences: ObservableObject {
         didSet { defaults.set(Array(enabledConnections), forKey: Key.connections) }
     }
 
+    @Published private(set) var voiceOrder: [VoiceEngine] {
+        didSet { defaults.set(voiceOrder.map(\.rawValue), forKey: Key.voiceOrder) }
+    }
+    @Published private(set) var disabledVoices: Set<VoiceEngine> {
+        didSet { defaults.set(disabledVoices.map(\.rawValue), forKey: Key.disabledVoices) }
+    }
+
+    var enabledVoices: [VoiceEngine] {
+        voiceOrder.filter { !disabledVoices.contains($0) }
+    }
+
+    /// Moves a voice up (-1) or down (+1) the order.
+    func moveVoice(_ engine: VoiceEngine, by offset: Int) {
+        guard let index = voiceOrder.firstIndex(of: engine), voiceOrder.indices.contains(index + offset) else { return }
+        voiceOrder.swapAt(index, index + offset)
+    }
+
+    /// At least one voice stays on. "Read replies aloud" is what silences them.
+    func setVoice(_ engine: VoiceEngine, enabled: Bool) {
+        if enabled {
+            disabledVoices.remove(engine)
+        } else if enabledVoices != [engine] {
+            disabledVoices.insert(engine)
+        }
+    }
+
     private enum Key {
+        static let voiceOrder = "com.proyecto26.openclicky.voiceOrder"
+        static let disabledVoices = "com.proyecto26.openclicky.disabledVoices"
         static let color = "com.proyecto26.openclicky.cursorColor"
         static let size = "com.proyecto26.openclicky.cursorSize"
         static let caption = "com.proyecto26.openclicky.captionSize"
@@ -135,6 +188,8 @@ final class AppPreferences: ObservableObject {
         captionSize = defaults.string(forKey: Key.caption).flatMap(CaptionSize.init) ?? .medium
         replyLength = defaults.string(forKey: Key.length).flatMap(ReplyLength.init) ?? .short
         speaksReplies = defaults.object(forKey: Key.speaks) as? Bool ?? true
+        voiceOrder = VoiceEngine.order(saved: defaults.stringArray(forKey: Key.voiceOrder))
+        disabledVoices = Set((defaults.stringArray(forKey: Key.disabledVoices) ?? []).compactMap(VoiceEngine.init))
         enabledConnections = defaults.stringArray(forKey: Key.connections).map(Set.init)
             ?? Set(MCPConnection.all.map(\.id))
     }

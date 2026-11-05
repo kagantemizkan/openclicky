@@ -176,10 +176,32 @@ enum Strings {
     }
 
     // Voice settings
-    static let voiceSettings = pick("ElevenLabs Sesi", "ElevenLabs Voice")
+    static let voiceOrder = pick("Ses sırası", "Voice order")
+    static let voiceOrderFooter = pick(
+        "Yanıtı listedeki ilk uygun ses okur. Çalışmazsa, örneğin ElevenLabs kredin bittiyse, sıradakine geçer.",
+        "The first suitable voice reads the reply. If it fails, say your ElevenLabs credits ran out, the next one takes over."
+    )
+    static let voiceSystem = pick("macOS Sesi", "macOS Voice")
+    static let voiceElevenLabsDetail = pick("İnternet gerekir, kredi harcar", "Needs internet, uses credits")
+    static let voiceAhenkDetail = pick("Bu Mac'te çalışır, yalnızca Türkçe okur", "Runs on this Mac, reads Turkish only")
+    static let voiceSystemDetail = pick("Bu Mac'te çalışır, her dili okur", "Runs on this Mac, reads any language")
+    static let voiceNeedsKey = pick("API anahtarı gerekli", "API key needed")
+    static let voiceNotInstalled = pick("Kurulu değil", "Not installed")
+    static let voiceMoveUp = pick("Yukarı taşı", "Move up")
+    static let voiceMoveDown = pick("Aşağı taşı", "Move down")
+    static let voiceTry = pick("Sesi dene", "Try voice")
+    static let voiceSample = pick("Merhaba, yanıtlarını bu sesle okuyacağım.", "Hi, I'll read your replies in this voice.")
+    static let voiceSampleTurkish = "Merhaba, yanıtlarını bu sesle okuyacağım."
+    static let noVoiceForText = pick("Açık seslerden hiçbiri bu yanıtı okuyamadı.", "None of the voices that are on could read this reply.")
+
+    static func voiceLastUsed(_ name: String) -> String {
+        isTurkish ? "Son yanıtı okuyan: \(name)" : "Last reply read by: \(name)"
+    }
+
+    static let voiceSettings = pick("ElevenLabs", "ElevenLabs")
     static let voiceBody = pick(
-        "İstersen yanıtları ElevenLabs sesiyle okutabilirsin. Boş bırakırsan yerel ses kullanılır.",
-        "Optionally read replies in an ElevenLabs voice. Leave this blank to use the local voice."
+        "Anahtar Bu Mac'in Anahtar Zinciri'nde saklanır.",
+        "The key is kept in this Mac's Keychain."
     )
     static let apiKey = pick("API anahtarı", "API key")
     static let voiceId = pick("Ses kimliği (isteğe bağlı)", "Voice ID (optional)")
