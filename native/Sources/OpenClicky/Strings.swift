@@ -147,6 +147,7 @@ enum Strings {
     static let tabAppearance = pick("Görünüm", "Appearance")
     static let tabConnections = pick("Bağlantılar", "Connections")
     static let tabVoice = pick("Ses", "Voice")
+    static let tabControl = pick("Kontrol", "Control")
     static let replyLength = pick("Yanıt uzunluğu", "Reply length")
     static let replyShort = pick("Kısa", "Short")
     static let replyDetailed = pick("Ayrıntılı", "Detailed")
@@ -235,4 +236,98 @@ enum Strings {
     static let saved = pick("Kaydedildi", "Saved")
     static let cleared = pick("Temizlendi", "Cleared")
     static let back = pick("Geri", "Back")
+
+    // MARK: Mouse and keyboard
+
+    static let controlToggle = pick("Claude fare ve klavyeyi kullanabilsin", "Let Claude use the mouse and keyboard")
+    static let controlToggleDetail = pick(
+        "Sadece sen bir şey yapmasını istediğinde. Öğretici modunda tıklamaları sen yaparsın.",
+        "Only when you ask it to do something. In a lesson, you do the clicking."
+    )
+    static let controlNeedsPermission = pick("Erişilebilirlik izni gerekiyor", "Needs Accessibility permission")
+    static let controlOpenPermission = pick("İzni Aç", "Open Settings")
+    static let controlBrowsers = pick("Tarayıcılarda da kullanabilsin", "Allow in browsers too")
+    static let controlBrowsersDetail = pick(
+        "Her adımda sana sorar. Web sayfalarındaki ödeme ekranları her zaman fark edilemeyebilir.",
+        "Asks at every step. Checkouts on web pages can't always be recognised."
+    )
+    static let controlNeverTitle = pick("Asla yapamaz", "Never")
+    static let controlNeverPayments = pick(
+        "Satın alma, ödeme, abonelik veya para transferi",
+        "Buy, pay, subscribe or move money"
+    )
+    static let controlNeverSecrets = pick(
+        "Şifre, doğrulama kodu ve kart numarası alanları",
+        "Password, verification code and card number fields"
+    )
+    static let controlNeverApps = pick(
+        "Sistem Ayarları, Anahtar Zinciri, şifre yöneticileri, Terminal, App Store ve Claude'un kendisi",
+        "System Settings, Keychain, password managers, Terminal, the App Store, and Claude itself"
+    )
+    static let controlAsksTitle = pick("Önce sana sorar", "Asks you first")
+    static let controlAsksRisky = pick(
+        "Silme, gönderme, paylaşma, onaylama, kurma ve oturum açma",
+        "Delete, send, share, confirm, install and sign in"
+    )
+    static let controlAsksMessages = pick(
+        "Mesajlaşma uygulamalarında ve kod editörlerinde yazı yazma",
+        "Typing in messaging apps and code editors"
+    )
+    static let controlStopHint = pick(
+        "Durdurmak için Esc'e bas veya fareyi oynat.",
+        "Press Esc or move the mouse to stop."
+    )
+    static let controlStoppedEsc = pick("Esc'e bastın, durdum.", "You pressed Esc, so I stopped.")
+    static let controlStoppedMouse = pick("Fareyi oynattın, durdum.", "You moved the mouse, so I stopped.")
+    static func controlLimit(_ rounds: Int) -> String {
+        pick("\(rounds) adımda bitmedi, burada durdum.", "It wasn't done after \(rounds) rounds, so I stopped here.")
+    }
+    static let controlAskTitle = pick("Claude bunu yapmak istiyor", "Claude wants to do this")
+    static let controlRefuse = pick("Yapma", "Don't Allow")
+    static let controlAllowOnce = pick("Bir Kez İzin Ver", "Allow Once")
+    static func controlQuestion(action: String, label: String, app: String, reason: String) -> String {
+        let on = label.isEmpty ? "" : " “\(label)”"
+        return "\(action)\(on)\n\(app)\n\n\(reason)"
+    }
+
+    // Worded for Claude and the user alike, and never containing screen text.
+    static let controlClick = pick("Tıklama", "Click")
+    static let controlDoubleClick = pick("Çift tıklama", "Double-click")
+    static let controlRightClick = pick("Sağ tıklama", "Right-click")
+    static let controlDrag = pick("Sürükleme", "Drag")
+    static let controlScroll = pick("Kaydırma", "Scroll")
+    static func controlType(_ text: String) -> String {
+        pick("Yazma: “\(text)”", "Type: “\(text)”")
+    }
+    static func controlKey(_ name: String) -> String {
+        pick("Tuş: \(name)", "Key: \(name)")
+    }
+    static func controlDoneReport(_ action: String) -> String {
+        pick("yapıldı: \(action)", "done: \(action)")
+    }
+    static func controlRefusedReport(_ action: String, _ reason: String) -> String {
+        pick("reddedildi: \(action). \(reason)", "refused: \(action). \(reason)")
+    }
+    static func controlDeclinedReport(_ action: String) -> String {
+        pick("kullanıcı izin vermedi: \(action)", "the user declined: \(action)")
+    }
+    static let controlUnknownApp = pick("Hangi uygulama olduğu anlaşılamadı.", "Couldn't tell which app this is.")
+    static func controlBannedApp(_ app: String) -> String {
+        pick("\(app) içinde fare ve klavye kullanılamaz.", "The mouse and keyboard can't be used in \(app).")
+    }
+    static let controlBrowsersOff = pick(
+        "Tarayıcılarda kapalı. Ayarlar > Kontrol'den açılabilir.",
+        "Off in browsers. It can be turned on in Settings > Control."
+    )
+    static func controlKeyNotAllowed(_ key: String) -> String {
+        pick("\(key) tuşuna basılamaz.", "The key \(key) can't be pressed.")
+    }
+    static let controlPayment = pick("Satın alma ve ödeme yapılamaz.", "Purchases and payments aren't allowed.")
+    static let controlSecret = pick("Şifre ve gizli bilgi alanlarına dokunulamaz.", "Password and secret fields can't be touched.")
+    static let controlCardNumber = pick("Kart numarası yazılamaz.", "Card numbers can't be typed.")
+    static let controlNoScreen = pick("Bu ekran bulunamadı.", "That screen wasn't found.")
+    static let controlChanged = pick("Bu arada ekran değişti.", "The screen changed in the meantime.")
+    static let controlAskBrowser = pick("Tarayıcıda her adım için izin istenir.", "Every step in a browser needs your OK.")
+    static let controlAskCritical = pick("Bu adım geri alınamayabilir.", "This step may not be reversible.")
+    static let controlAskTyping = pick("Burada yazmak veya Return'e basmak mesaj gönderebilir ya da kod çalıştırabilir.", "Typing or pressing Return here can send a message or run code.")
 }

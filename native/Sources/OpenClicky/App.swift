@@ -102,6 +102,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        // `--control-test <path>` checks the real mouse and keyboard against
+        // a window of its own and writes a report there.
+        if let flag = CommandLine.arguments.firstIndex(of: "--control-test"),
+           CommandLine.arguments.indices.contains(flag + 1) {
+            let path = CommandLine.arguments[flag + 1]
+            Task { @MainActor in
+                exit(await ControlSelfTest.run(reportPath: path))
+            }
+            return
+        }
+
         installStatusItem()
         // The cursor waits just below its menu bar icon.
         viewModel.overlayManager.homeProvider = { [weak self] in

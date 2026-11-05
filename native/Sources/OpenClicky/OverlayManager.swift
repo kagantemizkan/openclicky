@@ -112,6 +112,9 @@ final class OverlayManager: ObservableObject {
     /// Where the view drew the caption, in global AppKit coordinates.
     var captionFrame: CGRect? { didSet { updatePointerRegion() } }
 
+    /// While Claude uses the real mouse, every click goes through to the apps below.
+    var isControlling = false { didSet { updatePointerRegion() } }
+
     /// Whether the user has moved the cursor's resting place.
     var hasCustomHome: Bool { customHome != nil }
 
@@ -267,7 +270,7 @@ final class OverlayManager: ObservableObject {
     }
 
     private func region(at point: CGPoint) -> CursorHit? {
-        guard isCursorVisible else { return nil }
+        guard isCursorVisible, !isControlling else { return nil }
         let width = AppPreferences.shared.cursorSize.arrowWidth
         let height = width * CursorGeometry.aspect
         return CursorHitTest.hit(

@@ -266,6 +266,9 @@ final class AppPreferences: ObservableObject {
     @Published var captionSize: CaptionSize { didSet { defaults.set(captionSize.rawValue, forKey: Key.caption) } }
     @Published var replyLength: ReplyLength { didSet { defaults.set(replyLength.rawValue, forKey: Key.length) } }
     @Published var speaksReplies: Bool { didSet { defaults.set(speaksReplies, forKey: Key.speaks) } }
+    /// Off until the user asks for it. Claude can't use the mouse and keyboard before then.
+    @Published var controlEnabled: Bool { didSet { defaults.set(controlEnabled, forKey: Key.controlEnabled) } }
+    @Published var controlInBrowsers: Bool { didSet { defaults.set(controlInBrowsers, forKey: Key.controlInBrowsers) } }
     @Published var enabledConnections: Set<String> {
         didSet { defaults.set(Array(enabledConnections), forKey: Key.connections) }
     }
@@ -348,6 +351,8 @@ final class AppPreferences: ObservableObject {
     }
 
     private enum Key {
+        static let controlEnabled = "com.proyecto26.openclicky.controlEnabled"
+        static let controlInBrowsers = "com.proyecto26.openclicky.controlInBrowsers"
         static let captionColor = "com.proyecto26.openclicky.captionColor"
         static let captionTextColor = "com.proyecto26.openclicky.captionTextColor"
         static let captionOpacity = "com.proyecto26.openclicky.captionOpacity"
@@ -388,6 +393,8 @@ final class AppPreferences: ObservableObject {
         captionSize = defaults.string(forKey: Key.caption).flatMap(CaptionSize.init) ?? .medium
         replyLength = defaults.string(forKey: Key.length).flatMap(ReplyLength.init) ?? .short
         speaksReplies = defaults.object(forKey: Key.speaks) as? Bool ?? true
+        controlEnabled = defaults.object(forKey: Key.controlEnabled) as? Bool ?? false
+        controlInBrowsers = defaults.object(forKey: Key.controlInBrowsers) as? Bool ?? false
         readOnlyConnections = Set(defaults.stringArray(forKey: Key.readOnlyConnections) ?? [])
         voiceOrder = VoiceEngine.order(saved: defaults.stringArray(forKey: Key.voiceOrder))
         disabledVoices = Set((defaults.stringArray(forKey: Key.disabledVoices) ?? []).compactMap(VoiceEngine.init))

@@ -1,7 +1,7 @@
 //
 //  SettingsView.swift
-//  The Settings window: general behaviour, the cursor's look, voice, and
-//  read-only connections to other apps.
+//  The Settings window: general behaviour, the cursor's look, connections to
+//  other apps, mouse and keyboard control, and voice.
 //
 
 import SwiftUI
@@ -31,6 +31,10 @@ enum SettingsWindow {
         ))
         add(Strings.tabAppearance, icon: "paintpalette", height: 640, AppearanceSettings(preferences: preferences))
         add(Strings.tabConnections, icon: "link", height: 420, ConnectionsSettings(preferences: preferences))
+        add(Strings.tabControl, icon: "cursorarrow.click.2", height: 520, ControlSettings(
+            viewModel: viewModel,
+            preferences: preferences
+        ))
         add(Strings.tabVoice, icon: "speaker.wave.2", height: 570, VoiceSettings(
             viewModel: viewModel,
             speech: viewModel.textToSpeech,
@@ -327,6 +331,60 @@ struct ConnectionsSettings: View {
                 .font(.title2)
                 .foregroundStyle(.secondary)
                 .frame(width: 24, height: 24)
+        }
+    }
+}
+
+// MARK: - Mouse and keyboard
+
+struct ControlSettings: View {
+    @ObservedObject var viewModel: OpenClickyViewModel
+    @ObservedObject var preferences: AppPreferences
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle(isOn: $preferences.controlEnabled) {
+                    Text(Strings.controlToggle)
+                    Text(Strings.controlToggleDetail)
+                }
+                if preferences.controlEnabled, !viewModel.hasAccessibilityPermission {
+                    HStack {
+                        Label(Strings.controlNeedsPermission, systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                        Spacer()
+                        Button(Strings.controlOpenPermission, action: viewModel.openAccessibilitySettings)
+                    }
+                }
+                Toggle(isOn: $preferences.controlInBrowsers) {
+                    Text(Strings.controlBrowsers)
+                    Text(Strings.controlBrowsersDetail)
+                }
+                .disabled(!preferences.controlEnabled)
+            }
+            Section(Strings.controlNeverTitle) {
+                rule("xmark.octagon.fill", .red, Strings.controlNeverPayments)
+                rule("xmark.octagon.fill", .red, Strings.controlNeverSecrets)
+                rule("xmark.octagon.fill", .red, Strings.controlNeverApps)
+            }
+            Section(Strings.controlAsksTitle) {
+                rule("questionmark.circle.fill", .orange, Strings.controlAsksRisky)
+                rule("questionmark.circle.fill", .orange, Strings.controlAsksMessages)
+            }
+            Section {
+                rule("stop.circle.fill", .secondary, Strings.controlStopHint)
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private func rule(_ icon: String, _ color: Color, _ text: String) -> some View {
+        Label {
+            Text(text)
+                .fixedSize(horizontal: false, vertical: true)
+        } icon: {
+            Image(systemName: icon).foregroundStyle(color)
         }
     }
 }

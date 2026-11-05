@@ -85,6 +85,10 @@ final class OpenClickyViewModel: ObservableObject {
     let pushToTalkMonitor = PushToTalkMonitor()
     let dictationManager = DictationManager()
     let accessibilityPermission = AccessibilityPermission()
+    private var controlRounds = 0
+    private var controlWatchdog: Task<Void, Never>?
+    private var controlIsPosting = false
+    private var controlMouseAnchor: CGPoint = .zero
     let textToSpeech = TextToSpeech()
     let overlayManager = OverlayManager()
 
@@ -499,9 +503,18 @@ final class OpenClickyViewModel: ObservableObject {
         lastError = nil
         overlayManager.show([])
         if userPrompt != TutorMode.lookPrompt { lessonAwaitsGoal = false }
+        let isContinuation = userPrompt.hasPrefix(ComputerControl.continuePrefix)
+        if !isContinuation { controlRounds = 0 }
+        // Only a person's request can move the mouse: never an automatic look,
+        // and never while a lesson has the user doing the clicking.
+        let canControl = preferences.controlEnabled
+            && accessibilityPermission.isGranted
+            && !isTutorMode
+            && userPrompt != TutorMode.lookPrompt
         let frontmost = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
 
         currentTask = Task { @MainActor in
+            var continuesControl = false
             defer {
                 if self.turnGeneration == thisTurn { self.overlayManager.thinkingDetail = nil }
                 // Only clear the flag if this task is still the current
@@ -510,6 +523,7 @@ final class OpenClickyViewModel: ObservableObject {
                 // new turn may already be underway.
                 if self.turnGeneration == thisTurn {
                     self.isRunningTurn = false
+                    if !continuesControl { self.endControlChain() }
                 }
             }
             do {
@@ -554,7 +568,8 @@ final class OpenClickyViewModel: ObservableObject {
                 let result = try await runner.ask(
                     messages: [message],
                     systemPrompt: TutorMode.systemPrompt(
-                        base: Self.systemPrompt + preferences.replyLength.promptNote,
+                        base: Self.systemPrompt + preferences.replyLength.promptNote
+                            + (canControl ? ComputerControl.promptRules : ""),
                         active: isTutorMode,
                         lessonApp: lessonChoice?.appName,
                         connectedApps: attached?.connected.map(\.displayName) ?? [],
@@ -577,7 +592,7 @@ final class OpenClickyViewModel: ObservableObject {
                     claudeSessionId: result.sessionId,
                     usage: result.usage,
                     contextTokens: result.contextTokens,
-                    prompt: userPrompt == TutorMode.lookPrompt ? nil : userPrompt
+                    prompt: userPrompt == TutorMode.lookPrompt || isContinuation ? nil : userPrompt
                 )
 
                 guard self.turnGeneration == thisTurn, !Task.isCancelled else { return }
@@ -594,8 +609,9 @@ final class OpenClickyViewModel: ObservableObject {
                     return
                 }
 
-                // Strip drawing and POINT tags before TTS.
-                let drawing = DrawTagParser.parse(reply.text)
+                // Strip control, drawing and POINT tags before TTS.
+                let control = ControlTagParser.parse(reply.text)
+                let drawing = DrawTagParser.parse(control.text)
                 let parsed = PointTagParser.parse(drawing.text)
                 streamingText = parsed.spokenText
 
@@ -641,6 +657,12 @@ final class OpenClickyViewModel: ObservableObject {
 
                 guard self.turnGeneration == thisTurn, !Task.isCancelled else { return }
 
+                if canControl, !control.actions.isEmpty {
+                    continuesControl = await carryOut(control.actions, manifest: manifest, turn: thisTurn)
+                    guard self.turnGeneration == thisTurn, !Task.isCancelled else { return }
+                    if continuesControl { return }
+                }
+
                 if self.turnGeneration == thisTurn {
                     state = .idle
                     scheduleResponseFade(for: thisTurn)
@@ -682,6 +704,111 @@ final class OpenClickyViewModel: ObservableObject {
         }
     }
 
+    // MARK: - Mouse and keyboard
+
+    /// Runs one reply's actions. True when another round follows with a fresh
+    /// screenshot, so the chain and its stop-watching stay on.
+    private func carryOut(_ actions: [ControlAction], manifest: CaptureManifest, turn: Int) async -> Bool {
+        state = .thinking
+        controlIsPosting = true
+        watchControl()
+        let executor = ControlExecutor(
+            poster: SystemControlPoster(),
+            inspector: SystemControlInspector(),
+            allowsBrowsers: preferences.controlInBrowsers,
+            onStep: { [weak self] point, display in
+                self?.overlayManager.flyTo(BlueCursorTarget(globalLocation: point, displayFrame: display, label: nil))
+            },
+            approve: { [weak self] question in
+                await self?.askControlApproval(question) ?? false
+            }
+        )
+        let report = await executor.run(
+            actions,
+            manifest: manifest,
+            primaryHeight: NSScreen.screens.first?.frame.height ?? 0
+        )
+        controlMouseAnchor = NSEvent.mouseLocation
+        controlIsPosting = false
+        guard turnGeneration == turn, !Task.isCancelled else { return false }
+
+        if report.userTookOver {
+            stopControl(Strings.controlStoppedMouse)
+            return false
+        }
+        controlRounds += 1
+        guard controlRounds < ComputerControl.maxRounds else {
+            lastError = Strings.controlLimit(ComputerControl.maxRounds)
+            return false
+        }
+        // After this turn's task has finished and cleared isRunningTurn. The UI
+        // gets a moment to react so the next screenshot shows the result.
+        let prompt = ComputerControl.continuePrompt(report: report.lines)
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 700_000_000)
+            guard let self, self.turnGeneration == turn, !self.isRunningTurn else { return }
+            self.runTurn(userPrompt: prompt, thenSpeak: true)
+        }
+        return true
+    }
+
+    /// Esc and moving the mouse stop everything, from the first action until
+    /// the request is finished. This reads whether Esc is down right now, and
+    /// where the mouse is. It doesn't see other keys.
+    private func watchControl() {
+        guard controlWatchdog == nil else { return }
+        overlayManager.isControlling = true
+        controlMouseAnchor = NSEvent.mouseLocation
+        controlWatchdog = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+                guard let self, !Task.isCancelled else { return }
+                // The hardware's state, so only the user's own key press counts.
+                if CGEventSource.keyState(.hidSystemState, key: 53) {
+                    self.stopControl(Strings.controlStoppedEsc)
+                    return
+                }
+                let mouse = NSEvent.mouseLocation
+                if !self.controlIsPosting,
+                   hypot(mouse.x - self.controlMouseAnchor.x, mouse.y - self.controlMouseAnchor.y) > 4 {
+                    self.stopControl(Strings.controlStoppedMouse)
+                    return
+                }
+            }
+        }
+    }
+
+    private func stopControl(_ message: String) {
+        cancelCurrentTurn()
+        streamingText = message
+        scheduleResponseFade(for: turnGeneration)
+    }
+
+    private func endControlChain() {
+        controlWatchdog?.cancel()
+        controlWatchdog = nil
+        controlIsPosting = false
+        overlayManager.isControlling = false
+    }
+
+    /// The system's own alert, which nothing on screen can answer for the user:
+    /// clicks on this app are refused. Refuse is the default button.
+    private func askControlApproval(_ question: String) async -> Bool {
+        let previous = NSWorkspace.shared.frontmostApplication
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = Strings.controlAskTitle
+        alert.informativeText = question
+        alert.addButton(withTitle: Strings.controlRefuse)
+        alert.addButton(withTitle: Strings.controlAllowOnce)
+        NSApp.activate(ignoringOtherApps: true)
+        let approved = alert.runModal() == .alertSecondButtonReturn
+        previous?.activate()
+        // Give focus time to return before anything is typed.
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        return approved
+    }
+
     /// A typed question, answered just like a spoken one.
     func ask(_ question: String) {
         tutorLookPending = false
@@ -698,6 +825,7 @@ final class OpenClickyViewModel: ObservableObject {
         // Bump the generation so the cancelled task's defer/catch blocks
         // see they're no longer current and skip their state mutations.
         turnGeneration += 1
+        endControlChain()
         textToSpeech.stop()
         dictationManager.cancelListening()
         overlayManager.reset()
