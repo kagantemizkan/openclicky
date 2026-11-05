@@ -32,7 +32,7 @@
 
 APP_NAME    := OpenClicky
 EXEC        := openclicky
-BUNDLE_ID   := com.proyecto26.openclicky
+BUNDLE_ID   := com.kagantemizkan.openclicky
 VERSION     := 0.1.0
 ARCH        := arm64
 

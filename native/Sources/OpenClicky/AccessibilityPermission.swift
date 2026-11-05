@@ -25,7 +25,7 @@ import os
 final class AccessibilityPermission: ObservableObject {
     @Published private(set) var isGranted: Bool
 
-    private let logger = Logger(subsystem: "com.proyecto26.openclicky", category: "AccessibilityPermission")
+    private let logger = Logger(subsystem: "com.kagantemizkan.openclicky", category: "AccessibilityPermission")
     private var pollingTimer: Timer?
     private var distributedTCCObserver: NSObjectProtocol?
     private var didActivateObserver: NSObjectProtocol?

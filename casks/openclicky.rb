@@ -14,10 +14,10 @@ cask "openclicky" do
   version "0.1.0"
   sha256 "0000000000000000000000000000000000000000000000000000000000000000"
 
-  url "https://github.com/proyecto26/openclicky/releases/download/v#{version}/OpenClicky-#{version}-arm64.dmg"
+  url "https://github.com/kagantemizkan/openclicky/releases/download/v#{version}/OpenClicky-#{version}-arm64.dmg"
   name "OpenClicky"
   desc "Friendly, screen-aware Claude Code companion for macOS"
-  homepage "https://github.com/proyecto26/openclicky"
+  homepage "https://github.com/kagantemizkan/openclicky"
 
   livecheck do
     url :url
@@ -31,8 +31,8 @@ cask "openclicky" do
 
   zap trash: [
     "~/Library/Application Support/OpenClicky",
-    "~/Library/Preferences/com.proyecto26.openclicky.plist",
-    "~/Library/Caches/com.proyecto26.openclicky",
-    "~/Library/Logs/com.proyecto26.openclicky",
+    "~/Library/Preferences/com.kagantemizkan.openclicky.plist",
+    "~/Library/Caches/com.kagantemizkan.openclicky",
+    "~/Library/Logs/com.kagantemizkan.openclicky",
   ]
 end

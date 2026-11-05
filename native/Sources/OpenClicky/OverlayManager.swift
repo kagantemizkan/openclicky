@@ -139,13 +139,13 @@ final class OverlayManager: ObservableObject {
 
     /// How long the cursor lingers where it pointed before heading home.
     private static let lingerSeconds: TimeInterval = 4
-    private static let showsAtRestKey = "com.proyecto26.openclicky.showsCursorAtRest"
-    private static let homeXKey = "com.proyecto26.openclicky.cursorHomeX"
-    private static let homeYKey = "com.proyecto26.openclicky.cursorHomeY"
+    private static let showsAtRestKey = "com.kagantemizkan.openclicky.showsCursorAtRest"
+    private static let homeXKey = "com.kagantemizkan.openclicky.cursorHomeX"
+    private static let homeYKey = "com.kagantemizkan.openclicky.cursorHomeY"
     /// Movement below this is a click rather than a drag.
     private static let dragThreshold: CGFloat = 3
 
-    private let logger = Logger(subsystem: "com.proyecto26.openclicky", category: "OverlayManager")
+    private let logger = Logger(subsystem: "com.kagantemizkan.openclicky", category: "OverlayManager")
     private let defaults: UserDefaults
     private var windows: [OverlayWindow] = []
     private var screenParameterObserver: NSObjectProtocol?

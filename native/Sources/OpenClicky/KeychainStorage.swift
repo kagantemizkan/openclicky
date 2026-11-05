@@ -5,7 +5,7 @@
 //  so API keys never hit a plaintext file.
 //
 //  Items are stored as `kSecClassGenericPassword` with:
-//    - kSecAttrService = "com.proyecto26.openclicky.elevenlabs"
+//    - kSecAttrService = "com.kagantemizkan.openclicky.elevenlabs"
 //    - kSecAttrAccount = the field name ("apiKey" / "voiceId")
 //  Values live in the login keychain, locked when the Mac is locked.
 //

@@ -124,7 +124,7 @@ final class SessionStore: ObservableObject {
     }
 
     private let fileURL: URL
-    private let logger = Logger(subsystem: "com.proyecto26.openclicky", category: "SessionStore")
+    private let logger = Logger(subsystem: "com.kagantemizkan.openclicky", category: "SessionStore")
 
     nonisolated static var defaultFileURL: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]

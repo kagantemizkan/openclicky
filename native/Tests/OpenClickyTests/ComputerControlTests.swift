@@ -91,7 +91,7 @@ final class ComputerControlTests: XCTestCase {
     func testCriticalAppsAreRefusedForEveryAction() {
         let apps = [
             "com.apple.systempreferences", "com.apple.keychainaccess", "com.apple.Passwords", "com.apple.Terminal",
-            "com.googlecode.iterm2", "dev.warp.Warp-Stable", "com.apple.AppStore", "com.proyecto26.openclicky",
+            "com.googlecode.iterm2", "dev.warp.Warp-Stable", "com.apple.AppStore", "com.kagantemizkan.openclicky",
             "com.anthropic.claudefordesktop", "com.1password.1password", "com.apple.SecurityAgent",
         ]
         let actions: [ControlAction] = [click, .type("x"), .key("return"), .scroll(x: 0, y: 0, amount: 1, screen: nil)]

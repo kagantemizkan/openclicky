@@ -33,7 +33,7 @@ enum ClaudeModel: String, CaseIterable, Identifiable {
         }
     }
 
-    private static let defaultsKey = "com.proyecto26.openclicky.selectedModel"
+    private static let defaultsKey = "com.kagantemizkan.openclicky.selectedModel"
 
     static func loadPersisted() -> ClaudeModel {
         guard let raw = UserDefaults.standard.string(forKey: defaultsKey),
@@ -99,7 +99,7 @@ final class OpenClickyViewModel: ObservableObject {
 
     // MARK: - Private
 
-    private let logger = Logger(subsystem: "com.proyecto26.openclicky", category: "OpenClickyViewModel")
+    private let logger = Logger(subsystem: "com.kagantemizkan.openclicky", category: "OpenClickyViewModel")
     private var currentTask: Task<Void, Never>?
     /// Monotonically increasing counter incremented every time a turn is
     /// started OR cancelled. Lets in-flight turns recognise when they've

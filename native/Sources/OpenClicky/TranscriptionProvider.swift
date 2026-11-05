@@ -44,7 +44,7 @@ protocol TranscriptionProvider {
 // MARK: - Factory
 
 enum TranscriptionProviderFactory {
-    private static let logger = Logger(subsystem: "com.proyecto26.openclicky", category: "TranscriptionProvider")
+    private static let logger = Logger(subsystem: "com.kagantemizkan.openclicky", category: "TranscriptionProvider")
 
     /// Returns the best available STT provider for the current
     /// environment. Today that's always Apple Speech — a single

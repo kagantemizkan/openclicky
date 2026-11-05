@@ -76,13 +76,17 @@ private final class ActionMenuItem: NSMenuItem {
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private let logger = Logger(subsystem: "com.proyecto26.openclicky", category: "AppDelegate")
+    private let logger = Logger(subsystem: "com.kagantemizkan.openclicky", category: "AppDelegate")
     private var statusItem: NSStatusItem?
     private var panel: NSPanel?
     private var outsideClickMonitor: Any?
     private var keyEventMonitor: Any?
     private var globalKeyEventMonitor: Any?
-    private let viewModel = OpenClickyViewModel()
+    private let viewModel: OpenClickyViewModel = {
+        // The view model reads its settings as it starts, so they move first.
+        IdentityMigration.run()
+        return OpenClickyViewModel()
+    }()
     private var sessionBridge: SessionBridge?
     private var settingsWindow: NSWindow?
     private var observations: Set<AnyCancellable> = []

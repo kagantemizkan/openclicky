@@ -40,7 +40,7 @@ final class ScreenRecordingPermission: ObservableObject {
     /// the probe, for the lifetime of the process.
     @Published private(set) var requiresRelaunch: Bool = false
 
-    private let logger = Logger(subsystem: "com.proyecto26.openclicky", category: "ScreenRecordingPermission")
+    private let logger = Logger(subsystem: "com.kagantemizkan.openclicky", category: "ScreenRecordingPermission")
     private var pollingTimer: Timer?
     private var distributedTCCObserver: NSObjectProtocol?
     private var didActivateObserver: NSObjectProtocol?

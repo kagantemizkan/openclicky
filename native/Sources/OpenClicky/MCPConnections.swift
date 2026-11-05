@@ -111,7 +111,7 @@ struct MCPTurnConfig: Equatable {
 }
 
 enum MCPConnections {
-    private static let logger = Logger(subsystem: "com.proyecto26.openclicky", category: "MCPConnections")
+    private static let logger = Logger(subsystem: "com.kagantemizkan.openclicky", category: "MCPConnections")
 
     /// Which connections a turn should carry. Each costs start-up time and
     /// tokens, so one attaches only while its app is in front or being taught.

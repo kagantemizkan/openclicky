@@ -55,7 +55,7 @@ enum SmokeTest {
     /// Runs every probe sequentially. Each step is wrapped so a single
     /// failure (e.g. capture denied) doesn't abort the others.
     static func run() async -> Int32 {
-        let logger = Logger(subsystem: "com.proyecto26.openclicky", category: "SmokeTest")
+        let logger = Logger(subsystem: "com.kagantemizkan.openclicky", category: "SmokeTest")
         logger.info("smoke test starting")
 
         let claude: ClaudeCLIStatus

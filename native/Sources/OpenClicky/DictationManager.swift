@@ -48,7 +48,7 @@ final class DictationManager: NSObject, ObservableObject {
 
     // MARK: - Private
 
-    private let logger = Logger(subsystem: "com.proyecto26.openclicky", category: "DictationManager")
+    private let logger = Logger(subsystem: "com.kagantemizkan.openclicky", category: "DictationManager")
     private let transcriptionProvider: any TranscriptionProvider
     private let audioEngine = AVAudioEngine()
     private var activeSession: (any TranscriptionSession)?

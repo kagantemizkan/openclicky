@@ -81,7 +81,7 @@ struct ClaudeCLIRunResult {
 
 final class ClaudeCLIRunner {
     private let binaryURL: URL
-    private let logger = Logger(subsystem: "com.proyecto26.openclicky", category: "ClaudeCLIRunner")
+    private let logger = Logger(subsystem: "com.kagantemizkan.openclicky", category: "ClaudeCLIRunner")
 
     init(binaryURL: URL) {
         self.binaryURL = binaryURL

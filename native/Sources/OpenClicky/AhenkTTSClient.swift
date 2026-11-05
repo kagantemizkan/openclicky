@@ -25,7 +25,7 @@ final class AhenkTTSClient: @unchecked Sendable {
     private let modelDirectoryURL: URL
     private let logFileURL: URL
     private let timeoutSeconds: TimeInterval
-    private let logger = Logger(subsystem: "com.proyecto26.openclicky", category: "AhenkTTSClient")
+    private let logger = Logger(subsystem: "com.kagantemizkan.openclicky", category: "AhenkTTSClient")
 
     private let lock = NSLock()
     private var process: Process?

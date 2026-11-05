@@ -75,7 +75,7 @@ final class PushToTalkMonitor: ObservableObject {
     /// the Combine subject manually.
     @Published private(set) var isPressed: Bool = false
 
-    private let logger = Logger(subsystem: "com.proyecto26.openclicky", category: "PushToTalkMonitor")
+    private let logger = Logger(subsystem: "com.kagantemizkan.openclicky", category: "PushToTalkMonitor")
     // nonisolated(unsafe) so deinit (which runs off the main actor in
     // Swift 6) can tear these CF handles down without re-entering the
     // main actor. Both CFMachPort and CFRunLoopSource are thread-safe

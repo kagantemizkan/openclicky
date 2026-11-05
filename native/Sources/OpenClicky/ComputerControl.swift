@@ -163,7 +163,7 @@ enum ControlPolicy {
     /// Never touched: they hold secrets, change security, run code, or spend money.
     /// A bundle id also matches anything under it, such as an app's helpers.
     static let bannedApps: [String] = [
-        "com.proyecto26.openclicky",
+        "com.kagantemizkan.openclicky",
         "com.anthropic.claudefordesktop",
         "com.apple.systempreferences", "com.apple.SystemPreferences", "com.apple.settings",
         "com.apple.keychainaccess", "com.apple.Passwords",

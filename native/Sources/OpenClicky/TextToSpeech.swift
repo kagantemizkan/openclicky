@@ -75,7 +75,7 @@ enum VoiceChain {
 
 @MainActor
 final class TextToSpeech: NSObject, ObservableObject {
-    private let logger = Logger(subsystem: "com.proyecto26.openclicky", category: "TextToSpeech")
+    private let logger = Logger(subsystem: "com.kagantemizkan.openclicky", category: "TextToSpeech")
     @Published private(set) var elevenLabsConfig: ElevenLabsConfig?
 
     @Published private(set) var isSpeaking: Bool = false

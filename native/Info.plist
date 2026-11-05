@@ -11,7 +11,7 @@
     <key>CFBundleIconFile</key>
     <string>OpenClicky.icns</string>
     <key>CFBundleIdentifier</key>
-    <string>com.proyecto26.openclicky</string>
+    <string>com.kagantemizkan.openclicky</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>

@@ -58,7 +58,7 @@ final class SessionBridge {
         .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         .appendingPathComponent("OpenClicky/bridge", isDirectory: true)
 
-    private let logger = Logger(subsystem: "com.proyecto26.openclicky", category: "SessionBridge")
+    private let logger = Logger(subsystem: "com.kagantemizkan.openclicky", category: "SessionBridge")
     private let onTarget: (BlueCursorTarget) -> Void
     private let onSpeak: (String) -> Void
     private var source: DispatchSourceFileSystemObject?

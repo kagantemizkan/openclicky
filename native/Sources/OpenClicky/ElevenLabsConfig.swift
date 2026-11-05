@@ -20,7 +20,7 @@ struct ElevenLabsConfig {
     static let defaultVoiceId = "kPzsL2i3teMYv0FxEYQ6"
 
     /// Keychain coordinates. Exposed so the Settings sheet can reuse them.
-    static let keychainService = "com.proyecto26.openclicky.elevenlabs"
+    static let keychainService = "com.kagantemizkan.openclicky.elevenlabs"
     static let keychainAPIKeyAccount = "apiKey"
     static let keychainVoiceIdAccount = "voiceId"
 
@@ -29,7 +29,7 @@ struct ElevenLabsConfig {
 
     /// Returns nil when no source yielded a key.
     static func load() -> ElevenLabsConfig? {
-        let logger = Logger(subsystem: "com.proyecto26.openclicky", category: "ElevenLabsConfig")
+        let logger = Logger(subsystem: "com.kagantemizkan.openclicky", category: "ElevenLabsConfig")
 
         if let env = loadFromEnvironment() {
             logger.info("ElevenLabs config loaded from environment")
