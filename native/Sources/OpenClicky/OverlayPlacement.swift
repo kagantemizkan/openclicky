@@ -44,11 +44,56 @@ enum OverlayPlacement {
     /// Top-left corner for a box beside `anchor`. Sits below and to the
     /// right by default, flips to the opposite side when it wouldn't fit,
     /// and is finally clamped so it stays visible even if neither side fits.
-    static func boxOrigin(anchor: CGPoint, size: CGSize, screen: CGSize, gap: CGSize) -> CGPoint {
-        CGPoint(
+    ///
+    /// When that would cover something in `avoiding`, it moves to the nearest
+    /// spot that doesn't, or failing that, the one that covers the least.
+    static func boxOrigin(
+        anchor: CGPoint,
+        size: CGSize,
+        screen: CGSize,
+        gap: CGSize,
+        avoiding: [CGRect] = []
+    ) -> CGPoint {
+        let preferred = CGPoint(
             x: placed(anchor: anchor.x, length: size.width, available: screen.width, gap: gap.width),
             y: placed(anchor: anchor.y, length: size.height, available: screen.height, gap: gap.height)
         )
+        func covered(_ origin: CGPoint) -> CGFloat {
+            let box = CGRect(origin: origin, size: size)
+            return avoiding.reduce(0) { total, rect in
+                let overlap = box.intersection(rect)
+                return overlap.isNull ? total : total + overlap.width * overlap.height
+            }
+        }
+        guard covered(preferred) > 0 else { return preferred }
+
+        // The four sides of the anchor, then just outside each thing to avoid.
+        var candidates = [
+            CGPoint(x: anchor.x + gap.width, y: anchor.y - gap.height - size.height),
+            CGPoint(x: anchor.x - gap.width - size.width, y: anchor.y + gap.height),
+            CGPoint(x: anchor.x - gap.width - size.width, y: anchor.y - gap.height - size.height),
+        ]
+        for rect in avoiding {
+            candidates += [
+                CGPoint(x: anchor.x + gap.width, y: rect.maxY + margin),
+                CGPoint(x: anchor.x + gap.width, y: rect.minY - margin - size.height),
+                CGPoint(x: rect.maxX + margin, y: anchor.y + gap.height),
+                CGPoint(x: rect.minX - margin - size.width, y: anchor.y + gap.height),
+            ]
+        }
+        func distance(_ origin: CGPoint) -> CGFloat {
+            hypot(origin.x + size.width / 2 - anchor.x, origin.y + size.height / 2 - anchor.y)
+        }
+        let onScreen = candidates.map { candidate in
+            CGPoint(
+                x: max(margin, min(candidate.x, screen.width - margin - size.width)),
+                y: max(margin, min(candidate.y, screen.height - margin - size.height))
+            )
+        }
+        return ([preferred] + onScreen).min { a, b in
+            let (coveredA, coveredB) = (covered(a), covered(b))
+            return coveredA == coveredB ? distance(a) < distance(b) : coveredA < coveredB
+        } ?? preferred
     }
 
     /// Centre for a chip whose preferred centre is `preferred`.

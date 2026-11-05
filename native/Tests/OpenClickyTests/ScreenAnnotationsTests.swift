@@ -224,4 +224,121 @@ final class ScreenAnnotationsTests: XCTestCase {
         preferences.drawingHasEdge = false
         try save("custom")
     }
+
+    // MARK: Keeping drawings readable
+
+    private let display = CGRect(x: 0, y: 0, width: 1280, height: 800)
+
+    func testTheCursorWaitsBehindAnArrowsTail() {
+        let arrow = ScreenAnnotation(shape: .arrow(from: CGPoint(x: 400, y: 400), to: CGPoint(x: 700, y: 400)))
+        XCTAssertEqual(arrow.cursorAnchor(on: display), CGPoint(x: 370, y: 400))
+    }
+
+    func testTheCursorStaysOnTheDisplay() {
+        let arrow = ScreenAnnotation(shape: .arrow(from: CGPoint(x: 0, y: 799), to: CGPoint(x: 300, y: 799)))
+        let spot = arrow.cursorAnchor(on: display)
+        XCTAssertTrue(display.contains(spot))
+    }
+
+    func testAPointOnADrawingGivesWayAndOneElsewhereStays() {
+        let arrow = ScreenAnnotation(shape: .arrow(from: CGPoint(x: 400, y: 400), to: CGPoint(x: 700, y: 400)))
+        XCTAssertEqual(
+            ScreenAnnotation.cursorSpot(pointing: CGPoint(x: 700, y: 400), annotations: [arrow], display: display),
+            CGPoint(x: 370, y: 400)
+        )
+        XCTAssertEqual(
+            ScreenAnnotation.cursorSpot(pointing: CGPoint(x: 100, y: 100), annotations: [arrow], display: display),
+            CGPoint(x: 100, y: 100)
+        )
+        XCTAssertNil(ScreenAnnotation.cursorSpot(pointing: nil, annotations: [], display: display))
+    }
+
+    func testADiagonalArrowOnlyKeepsItsOwnPathClear() {
+        let arrow = ScreenAnnotation(shape: .arrow(from: CGPoint(x: 100, y: 100), to: CGPoint(x: 700, y: 700)))
+        let rects = arrow.keepClear
+        XCTAssertTrue(rects.contains { $0.contains(CGPoint(x: 400, y: 400)) })
+        XCTAssertFalse(rects.contains { $0.contains(CGPoint(x: 650, y: 150)) })
+    }
+
+    func testTheMessageStaysPutUnlessItWouldCoverSomething() {
+        let size = CGSize(width: 200, height: 80)
+        let screen = CGSize(width: 1280, height: 800)
+        let gap = CGSize(width: 14, height: 27)
+        let anchor = CGPoint(x: 300, y: 300)
+        let usual = OverlayPlacement.boxOrigin(anchor: anchor, size: size, screen: screen, gap: gap)
+        XCTAssertEqual(usual, CGPoint(x: 314, y: 327))
+        XCTAssertEqual(
+            OverlayPlacement.boxOrigin(anchor: anchor, size: size, screen: screen, gap: gap, avoiding: [CGRect(x: 900, y: 600, width: 50, height: 50)]),
+            usual
+        )
+
+        let inTheWay = CGRect(x: 320, y: 330, width: 300, height: 200)
+        let moved = OverlayPlacement.boxOrigin(anchor: anchor, size: size, screen: screen, gap: gap, avoiding: [inTheWay])
+        XCTAssertFalse(CGRect(origin: moved, size: size).intersects(inTheWay))
+        XCTAssertTrue(CGRect(x: 12, y: 12, width: 1256, height: 776).contains(CGRect(origin: moved, size: size)))
+    }
+
+    func testWithNowhereFreeTheMessageCoversTheLeast() {
+        let size = CGSize(width: 200, height: 80)
+        let screen = CGSize(width: 400, height: 200)
+        let large = CGRect(x: 0, y: 0, width: 400, height: 130)
+        let moved = OverlayPlacement.boxOrigin(anchor: CGPoint(x: 100, y: 60), size: size, screen: screen, gap: CGSize(width: 14, height: 27), avoiding: [large])
+        // The free strip at the bottom is 70 tall, so only 22 rows overlap.
+        XCTAssertEqual(moved.y, 108)
+    }
+
+    @MainActor
+    func testADragKeepsTheMessageStillAndClearOfItsPath() async throws {
+        let overlay = OverlayManager(defaults: UserDefaults(suiteName: "openclicky-pin-\(UUID().uuidString)")!)
+        overlay.flyTo(BlueCursorTarget(globalLocation: CGPoint(x: 100, y: 100), displayFrame: display, label: nil))
+        try await Task.sleep(nanoseconds: 1_000_000_000)
+        overlay.glide(to: CGPoint(x: 300, y: 300), duration: 0.05)
+        XCTAssertNotNil(overlay.captionPin)
+        XCTAssertEqual(overlay.dragKeepClear.count, 1)
+        XCTAssertTrue(overlay.dragKeepClear[0].contains(CGPoint(x: 200, y: 200)))
+
+        overlay.flyTo(BlueCursorTarget(globalLocation: CGPoint(x: 50, y: 50), displayFrame: display, label: nil))
+        XCTAssertNil(overlay.captionPin)
+        XCTAssertTrue(overlay.dragKeepClear.isEmpty)
+    }
+
+    /// Reply, cursor and drawings together, as the overlay draws them.
+    @MainActor
+    func testRenderRepliesWithDrawings() async throws {
+        let output = ProcessInfo.processInfo.environment["OPENCLICKY_PREVIEW_DIR"] ?? ""
+        try XCTSkipIf(output.isEmpty, "set OPENCLICKY_PREVIEW_DIR to run")
+        let text = "miktar kaydırıcısını sağa doğru sürükle, vinyet o kadar güçlenir ve fark hemen görünür."
+        let cases: [(String, [ScreenAnnotation], CGPoint?)] = [
+            ("arrow-down-right", [ScreenAnnotation(shape: .arrow(from: CGPoint(x: 400, y: 600), to: CGPoint(x: 700, y: 300)))], nil),
+            ("arrow-up-left", [ScreenAnnotation(shape: .arrow(from: CGPoint(x: 800, y: 200), to: CGPoint(x: 500, y: 500)))], nil),
+            ("point-on-arrow-tip", [ScreenAnnotation(shape: .arrow(from: CGPoint(x: 300, y: 400), to: CGPoint(x: 700, y: 400)))], CGPoint(x: 700, y: 400)),
+            ("box-bottom-right", [ScreenAnnotation(shape: .box(CGRect(x: 850, y: 60, width: 380, height: 240)))], nil),
+            ("circle", [ScreenAnnotation(shape: .circle(center: CGPoint(x: 600, y: 420), radius: 50))], nil),
+        ]
+        for (name, annotations, point) in cases {
+            let overlay = OverlayManager(defaults: UserDefaults(suiteName: "openclicky-reply-\(UUID().uuidString)")!)
+            overlay.screenFrames = { [self.display] }
+            let spot = try XCTUnwrap(ScreenAnnotation.cursorSpot(pointing: point, annotations: annotations, display: display))
+            overlay.flyTo(BlueCursorTarget(globalLocation: spot, displayFrame: display, label: nil))
+            overlay.show(annotations)
+            overlay.streamingResponseText = text
+            try await Task.sleep(nanoseconds: 1_500_000_000)
+
+            let view = BlueCursorView(screenFrame: display, manager: overlay).background(Color(white: 0.2))
+            let host = NSHostingView(rootView: view)
+            host.sizingOptions = []
+            host.frame = display
+            let window = NSWindow(contentRect: display, styleMask: .borderless, backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.contentView = host
+            window.setFrameOrigin(CGPoint(x: -4000, y: -4000))
+            window.orderFrontRegardless()
+            try await Task.sleep(nanoseconds: 900_000_000)
+            let rep = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+            host.cacheDisplay(in: host.bounds, to: rep)
+            try rep.representation(using: .png, properties: [:])?
+                .write(to: URL(fileURLWithPath: "\(output)/reply-\(name).png"))
+            window.orderOut(nil)
+        }
+    }
 }

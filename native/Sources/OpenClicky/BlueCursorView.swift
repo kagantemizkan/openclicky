@@ -144,11 +144,14 @@ struct BlueCursorView: View {
     private func caption(tip: CGPoint) -> some View {
         let content = manager.caption
         if content != .none {
+            // Drawings stay readable: the message moves off them.
+            let cursorRect = CGRect(x: tip.x, y: tip.y, width: arrowWidth, height: arrowWidth * CursorGeometry.aspect)
             let origin = OverlayPlacement.boxOrigin(
-                anchor: tip,
+                anchor: manager.captionPin.map(viewPoint) ?? tip,
                 size: captionSize,
                 screen: screenFrame.size,
-                gap: captionGap
+                gap: captionGap,
+                avoiding: [cursorRect] + keepClearRects
             )
             CursorCaptionView(
                 content: content,
@@ -169,6 +172,19 @@ struct BlueCursorView: View {
                 .onChange(of: globalFrame(origin: origin), initial: true) { _, frame in
                     manager.captionFrame = frame
                 }
+        }
+    }
+
+    /// What the message shouldn't cover, in view coordinates.
+    private var keepClearRects: [CGRect] {
+        let global = manager.annotations.filter { $0.isOn(screenFrame) }.flatMap(\.keepClear) + manager.dragKeepClear
+        return global.map { rect in
+            CGRect(
+                x: rect.minX - screenFrame.origin.x,
+                y: screenFrame.height - (rect.maxY - screenFrame.origin.y),
+                width: rect.width,
+                height: rect.height
+            )
         }
     }
 

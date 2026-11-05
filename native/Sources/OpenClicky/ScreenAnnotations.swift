@@ -77,17 +77,63 @@ struct ScreenAnnotation: Equatable, Identifiable {
     let id = UUID()
     let shape: Shape
 
-    /// Where the cursor can sit without covering the thing drawn.
-    var cursorAnchor: CGPoint {
+    /// Where the cursor can sit without covering the thing drawn. It stays on
+    /// `display`. An arrow's cursor waits behind its tail, leaving the head clear.
+    func cursorAnchor(on display: CGRect) -> CGPoint {
+        let spot: CGPoint
         switch shape {
         case .circle(let center, let radius):
             let offset = radius * 0.72
-            return CGPoint(x: center.x + offset, y: center.y - offset)
-        case .arrow(_, let to):
-            return to
+            spot = CGPoint(x: center.x + offset, y: center.y - offset)
+        case .arrow(let from, let to):
+            let length = max(hypot(to.x - from.x, to.y - from.y), 1)
+            let back: CGFloat = 30
+            spot = CGPoint(x: from.x - (to.x - from.x) / length * back, y: from.y - (to.y - from.y) / length * back)
         case .box(let rect):
-            return CGPoint(x: rect.maxX, y: rect.minY)
+            spot = CGPoint(x: rect.maxX, y: rect.minY)
         }
+        // The cursor's body extends right and down from its tip.
+        return CGPoint(
+            x: max(display.minX + 4, min(spot.x, display.maxX - 30)),
+            y: max(display.minY + 30, min(spot.y, display.maxY - 4))
+        )
+    }
+
+    /// The space to leave free, in global AppKit coordinates. A diagonal arrow
+    /// is several small rects, so a message can sit in the corner it doesn't use.
+    var keepClear: [CGRect] {
+        switch shape {
+        case .circle(let center, let radius):
+            let reach = radius * 1.1 + 8
+            return [CGRect(x: center.x - reach, y: center.y - reach, width: reach * 2, height: reach * 2)]
+        case .arrow(let from, let to):
+            // Wide enough for the head and for the shaft's bend.
+            let reach: CGFloat = 26
+            let samples = max(Int(hypot(to.x - from.x, to.y - from.y) / 24), 1)
+            return (0...samples).map { index in
+                let t = CGFloat(index) / CGFloat(samples)
+                return CGRect(
+                    x: from.x + (to.x - from.x) * t - reach,
+                    y: from.y + (to.y - from.y) * t - reach,
+                    width: reach * 2,
+                    height: reach * 2
+                )
+            }
+        case .box(let rect):
+            return [rect.insetBy(dx: -8, dy: -8)]
+        }
+    }
+
+    /// Where the cursor should go for a reply. A point that would sit on a
+    /// drawing gives way to a spot beside it, so the drawing stays readable.
+    static func cursorSpot(
+        pointing point: CGPoint?,
+        annotations: [ScreenAnnotation],
+        display: CGRect
+    ) -> CGPoint? {
+        guard let point else { return annotations.first?.cursorAnchor(on: display) }
+        let covered = annotations.first { $0.keepClear.contains { $0.contains(point) } }
+        return covered?.cursorAnchor(on: display) ?? point
     }
 
     /// Whether it starts on this display.

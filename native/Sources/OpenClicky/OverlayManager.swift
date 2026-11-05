@@ -80,6 +80,9 @@ final class OverlayManager: ObservableObject {
     @Published private(set) var pointLabel: String? { didSet { updatePointerRegion() } }
     /// What Claude drew for the current reply or lesson step.
     @Published private(set) var annotations: [ScreenAnnotation] = []
+    /// While a drag is shown, the message holds still here, clear of its path.
+    @Published private(set) var captionPin: CGPoint?
+    @Published private(set) var dragKeepClear: [CGRect] = []
     /// The part of the cursor the mouse is over.
     @Published private(set) var hoveredRegion: CursorHit?
 
@@ -186,6 +189,8 @@ final class OverlayManager: ObservableObject {
         press = nil
         isOnTarget = true
         pointLabel = nil
+        captionPin = nil
+        dragKeepClear = []
         isCursorVisible = true
         fly(to: target.globalLocation) { [weak self] in
             self?.pointLabel = target.label
@@ -202,6 +207,14 @@ final class OverlayManager: ObservableObject {
             return
         }
         let start = cursorLocation
+        captionPin = start
+        let path = CGRect(
+            x: min(start.x, end.x),
+            y: min(start.y, end.y),
+            width: abs(end.x - start.x),
+            height: abs(end.y - start.y)
+        )
+        dragKeepClear = [path.insetBy(dx: -16, dy: -16)]
         flightTask = Task { @MainActor [weak self] in
             let began = Date()
             while !Task.isCancelled {
@@ -218,6 +231,8 @@ final class OverlayManager: ObservableObject {
         flightTask?.cancel()
         pointLabel = nil
         annotations = []
+        captionPin = nil
+        dragKeepClear = []
         streamingResponseText = ""
     }
 
@@ -262,6 +277,8 @@ final class OverlayManager: ObservableObject {
         isOnTarget = false
         pointLabel = nil
         annotations = []
+        captionPin = nil
+        dragKeepClear = []
         // A home on a display that has since gone is ignored, not forgotten.
         let usableHome = customHome.flatMap { home in isOnAScreen(home) ? home : nil }
         let home = usableHome ?? homeProvider() ?? fallbackHome

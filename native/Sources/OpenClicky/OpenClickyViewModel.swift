@@ -637,19 +637,18 @@ final class OpenClickyViewModel: ObservableObject {
 
                 // Fly as the speech starts, so "click here" and the arrow
                 // land together. The arrow holds while state is .speaking.
-                if let mapped {
+                let display = mapped?.displayFrame ?? annotations.first.flatMap { first in
+                    manifest.screens.first { first.isOn($0.displayFrame) }?.displayFrame
+                }
+                if let display, let spot = ScreenAnnotation.cursorSpot(
+                    pointing: mapped?.globalLocation,
+                    annotations: annotations,
+                    display: display
+                ) {
                     overlayManager.flyTo(BlueCursorTarget(
-                        globalLocation: mapped.globalLocation,
-                        displayFrame: mapped.displayFrame,
-                        label: mapped.label
-                    ))
-                } else if let first = annotations.first,
-                          let screen = manifest.screens.first(where: { first.isOn($0.displayFrame) }) {
-                    // Keep the caption beside the drawing, not back at home.
-                    overlayManager.flyTo(BlueCursorTarget(
-                        globalLocation: first.cursorAnchor,
-                        displayFrame: screen.displayFrame,
-                        label: nil
+                        globalLocation: spot,
+                        displayFrame: display,
+                        label: mapped?.label
                     ))
                 }
                 overlayManager.show(annotations)
