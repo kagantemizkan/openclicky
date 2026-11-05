@@ -61,8 +61,7 @@ enum Strings {
     static let stop = pick("Durdur (Esc)", "Stop (Esc)")
 
     // Options
-    static let tutorMode = pick("Öğretici mod", "Tutor mode")
-    static let tutorModeDetail = pick("Her tıklamadan sonra ekrana yeniden bakar", "Looks again after each click")
+    static let tutorMode = pick("Öğretici", "Tutor")
     static let cursorAtRest = pick("İmleci boştayken göster", "Show cursor at rest")
     static let cursorAtRestDetail = pick("Menü çubuğundaki simgenin altında bekler", "Waits below the menu bar icon")
     static let model = pick("Model", "Model")
@@ -110,6 +109,71 @@ enum Strings {
         "Sistem Ayarları'nda Gizlilik ve Güvenlik > Konuşma Tanıma bölümünden OpenClicky'yi aç.",
         "Turn on OpenClicky in System Settings > Privacy & Security > Speech Recognition."
     )
+
+    // Lessons
+    static let startLesson = pick("Öğretici Başlat", "Start Tutor")
+    static let endLesson = pick("Dersi Bitir", "End Lesson")
+    static let currentApp = pick("Şu Anki Uygulama", "Current App")
+
+    static func currentAppNamed(_ name: String) -> String {
+        isTurkish ? "Şu Anki Uygulama (\(name))" : "Current App (\(name))"
+    }
+
+    static func lessonSessionName(_ app: String) -> String {
+        isTurkish ? "\(app) dersi" : "\(app) lesson"
+    }
+
+    static func lessonGreeting(_ app: String) -> String {
+        isTurkish ? "\(app) dersine hazırım. ne öğrenmek istersin?" : "ready to teach \(app). what would you like to learn?"
+    }
+
+    static func lessonRunning(_ app: String) -> String {
+        isTurkish ? "\(app) dersi sürüyor" : "\(app) lesson in progress"
+    }
+
+    static let lessonRunningGeneric = pick("Ders sürüyor", "Lesson in progress")
+    static let tutorMenuDetail = pick("Uygulamayı seç, sor, tıkladıkça ilerlesin", "Pick an app, ask, and it follows your clicks")
+
+    static func lookingAt(_ app: String) -> String {
+        isTurkish ? "\(app)'a bakıyorum" : "Checking \(app)"
+    }
+
+    // Menu and settings window
+    static let settingsMenu = pick("Ayarlar…", "Settings…")
+    static let resetCursorPosition = pick("İmleci Menü Çubuğuna Döndür", "Return Cursor to Menu Bar")
+    static let quitApp = pick("OpenClicky'den Çık", "Quit OpenClicky")
+    static let settingsTitle = pick("OpenClicky Ayarları", "OpenClicky Settings")
+    static let tabGeneral = pick("Genel", "General")
+    static let tabAppearance = pick("Görünüm", "Appearance")
+    static let tabConnections = pick("Bağlantılar", "Connections")
+    static let tabVoice = pick("Ses", "Voice")
+    static let replyLength = pick("Yanıt uzunluğu", "Reply length")
+    static let replyShort = pick("Kısa", "Short")
+    static let replyDetailed = pick("Ayrıntılı", "Detailed")
+    static let talkShortcut = pick("Konuşma kısayolu", "Talk shortcut")
+    static let color = pick("Renk", "Color")
+    static let cursorSize = pick("İmleç boyutu", "Cursor size")
+    static let captionSize = pick("Yazı boyutu", "Text size")
+    static let sizeSmall = pick("Küçük", "Small")
+    static let sizeMedium = pick("Orta", "Medium")
+    static let sizeLarge = pick("Büyük", "Large")
+    static let colorBlue = pick("Mavi", "Blue")
+    static let colorGreen = pick("Yeşil", "Green")
+    static let colorPink = pick("Pembe", "Pink")
+    static let colorOrange = pick("Turuncu", "Orange")
+    static let colorSlate = pick("Arduvaz", "Slate")
+    static let previewCaption = pick("Filtreler'e tıkla", "Click Filters")
+    static let speakReplies = pick("Yanıtları sesli oku", "Read replies aloud")
+    static let speakRepliesDetail = pick("Kapalıyken yanıt yalnızca imlecin altında görünür", "When off, replies only appear under the cursor")
+    static let connectionMissing = pick("Claude Code'da tanımlı değil", "Not set up in Claude Code")
+    static let connectionsFooter = pick(
+        "Bağlantılar yalnızca okuyabilir, belgelerini değiştiremez. Her biri yalnızca o uygulama öndeyken ya da onun dersi sürerken açılır; bağlıyken yanıtlar biraz gecikir ve daha çok token harcar.",
+        "Connections can only read and can't change your documents. Each opens only while its app is in front or being taught; while connected, replies take a little longer and use more tokens."
+    )
+
+    static func readOnlyTools(_ count: Int) -> String {
+        isTurkish ? "Salt okunur · \(count) araç" : "Read-only · \(count) tools"
+    }
 
     // Voice settings
     static let voiceSettings = pick("ElevenLabs Sesi", "ElevenLabs Voice")

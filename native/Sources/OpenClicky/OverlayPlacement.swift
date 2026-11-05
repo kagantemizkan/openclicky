@@ -6,6 +6,38 @@
 
 import CoreGraphics
 
+/// The parts of the cursor that take the mouse.
+enum CursorHit: Equatable {
+    case close, caption, arrow
+}
+
+/// Which part of the cursor is under a point. Global AppKit coordinates.
+enum CursorHitTest {
+    static let closeSize: CGFloat = 18
+    /// How far the close button hangs over the caption's corner.
+    static let closeOverhang: CGFloat = 6
+
+    static func closeFrame(caption: CGRect) -> CGRect {
+        CGRect(
+            x: caption.maxX + closeOverhang - closeSize,
+            y: caption.maxY + closeOverhang - closeSize,
+            width: closeSize,
+            height: closeSize
+        )
+    }
+
+    static func hit(point: CGPoint, captionFrame: CGRect?, closable: Bool, arrowFrame: CGRect?) -> CursorHit? {
+        if let captionFrame {
+            if closable, closeFrame(caption: captionFrame).insetBy(dx: -3, dy: -3).contains(point) {
+                return .close
+            }
+            if captionFrame.contains(point) { return .caption }
+        }
+        if let arrowFrame, arrowFrame.contains(point) { return .arrow }
+        return nil
+    }
+}
+
 enum OverlayPlacement {
     static let margin: CGFloat = 12
 

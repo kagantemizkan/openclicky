@@ -196,7 +196,7 @@ final class SessionStoreTests: XCTestCase {
         XCTAssertEqual(CursorCaption.resolve(state: .idle, reply: "", label: nil, transcript: ""), .none)
         XCTAssertEqual(CursorCaption.resolve(state: .idle, reply: "", label: "Vinyet", transcript: ""), .text("Vinyet"))
         XCTAssertEqual(CursorCaption.resolve(state: .listening, reply: "eski", label: "Vinyet", transcript: "merhaba"), .listening(transcript: "merhaba"))
-        XCTAssertEqual(CursorCaption.resolve(state: .thinking, reply: "", label: "Vinyet", transcript: ""), .thinking)
+        XCTAssertEqual(CursorCaption.resolve(state: .thinking, reply: "", label: "Vinyet", transcript: ""), .thinking(detail: nil))
         XCTAssertEqual(CursorCaption.resolve(state: .thinking, reply: "yanıt", label: nil, transcript: ""), .text("yanıt"))
         XCTAssertEqual(CursorCaption.resolve(state: .speaking, reply: "yanıt", label: "Vinyet", transcript: ""), .text("yanıt"))
     }

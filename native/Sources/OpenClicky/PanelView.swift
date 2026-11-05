@@ -10,33 +10,28 @@ import SwiftUI
 struct PanelView: View {
     @ObservedObject var viewModel: OpenClickyViewModel
     @ObservedObject var sessions: SessionStore
-    @ObservedObject var overlay: OverlayManager
+    @ObservedObject var preferences = AppPreferences.shared
     let onDismiss: () -> Void
+    let onOpenSettings: () -> Void
     /// Reports the content's height so the window can fit it.
     let onHeightChange: (CGFloat) -> Void
 
     @State private var prompt = ""
-    @State private var showingSettings = false
 
     static let width: CGFloat = 320
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if showingSettings {
-                SettingsView(viewModel: viewModel) { showingSettings = false }
-                    .padding(14)
-            } else {
-                header
-                Group {
-                    if let notice = permissionNotice {
-                        notice.padding(14)
-                    } else {
-                        ready
-                    }
+            header
+            Group {
+                if let notice = permissionNotice {
+                    notice.padding(14)
+                } else {
+                    ready
                 }
-                Divider()
-                footer
             }
+            Divider()
+            footer
         }
         .frame(width: Self.width)
         .fixedSize(horizontal: false, vertical: true)
@@ -48,7 +43,7 @@ struct PanelView: View {
 
     private var header: some View {
         HStack(spacing: 10) {
-            CursorArrow(width: 14)
+            CursorArrow(width: 14, color: preferences.cursorColor)
                 .padding(.leading, 2)
             VStack(alignment: .leading, spacing: 1) {
                 Text(verbatim: "OpenClicky")
@@ -59,9 +54,7 @@ struct PanelView: View {
                     .lineLimit(2)
             }
             Spacer(minLength: 8)
-            Button {
-                showingSettings = true
-            } label: {
+            Button(action: onOpenSettings) {
                 Image(systemName: "gearshape")
                     .imageScale(.large)
             }
@@ -156,20 +149,24 @@ struct PanelView: View {
 
     private var options: some View {
         VStack(alignment: .leading, spacing: 12) {
-            OptionRow(title: Strings.tutorMode, detail: Strings.tutorModeDetail) {
-                Toggle(Strings.tutorMode, isOn: Binding(
-                    get: { viewModel.isTutorMode },
-                    set: { viewModel.setTutorMode($0) }
-                ))
-                .labelsHidden()
-                .toggleStyle(.switch)
-                .controlSize(.small)
-            }
-            OptionRow(title: Strings.cursorAtRest, detail: Strings.cursorAtRestDetail) {
-                Toggle(Strings.cursorAtRest, isOn: $overlay.showsCursorAtRest)
-                    .labelsHidden()
-                    .toggleStyle(.switch)
+            if viewModel.isTutorMode {
+                OptionRow(title: viewModel.lessonStatus, detail: nil) {
+                    Button(Strings.endLesson) { viewModel.setTutorMode(false) }
+                        .controlSize(.small)
+                }
+            } else {
+                OptionRow(title: Strings.tutorMode, detail: Strings.tutorMenuDetail) {
+                    Menu(Strings.startLesson) {
+                        ForEach(viewModel.lessonChoices()) { choice in
+                            Button(choice.menuTitle) {
+                                viewModel.startLesson(choice)
+                                onDismiss()
+                            }
+                        }
+                    }
                     .controlSize(.small)
+                    .fixedSize()
+                }
             }
             OptionRow(title: Strings.model, detail: nil) {
                 Picker(Strings.model, selection: $viewModel.selectedModel) {

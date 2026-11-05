@@ -64,6 +64,8 @@ struct ClaudeCLIStreamChunk {
     let accumulatedText: String
     let isFinal: Bool
     let totalCostUSD: Double?
+    /// Set when Claude starts using a tool, e.g. `mcp__blender__search_api_docs`.
+    var activeTool: String? = nil
 }
 
 struct ClaudeCLIRunResult {
@@ -72,6 +74,7 @@ struct ClaudeCLIRunResult {
     let totalCostUSD: Double?
     let durationMs: Int?
     var usage: TokenUsage? = nil
+    var contextTokens: Int? = nil
 }
 
 // MARK: - Runner
@@ -163,6 +166,7 @@ final class ClaudeCLIRunner {
         systemPrompt: String,
         model: String,
         resumeSessionId: String? = nil,
+        mcp: MCPTurnConfig? = nil,
         onChunk: @escaping @Sendable (ClaudeCLIStreamChunk) -> Void
     ) async throws -> ClaudeCLIRunResult {
         try Task.checkCancellation()
@@ -172,7 +176,8 @@ final class ClaudeCLIRunner {
         process.arguments = buildArgs(
             systemPrompt: systemPrompt,
             model: model,
-            resumeSessionId: resumeSessionId
+            resumeSessionId: resumeSessionId,
+            mcp: mcp
         )
 
         let stdinPipe = Pipe()
@@ -207,7 +212,8 @@ final class ClaudeCLIRunner {
         var sessionId: String? = nil
         var finalCostUSD: Double? = nil
         var finalDurationMs: Int? = nil
-        var usage: TokenUsage? = nil
+        var usage = TurnUsage()
+        var stopReason: String? = nil
 
         var replyComplete = false
         let startedAt = Date()
@@ -218,7 +224,6 @@ final class ClaudeCLIRunner {
             readLoop: for try await line in lineStream {
                 try Task.checkCancellation()
                 guard let event = parseJSON(line) else { continue }
-                if let latest = event.usage { usage = latest }
 
                 switch event.type {
                 case "system" where event.subtype == "init":
@@ -228,20 +233,34 @@ final class ClaudeCLIRunner {
                     }
 
                 case "stream_event":
+                    usage.message(event.usage)
+                    if let reason = event.stopReason { stopReason = reason }
+                    // A reply that uses tools spans several messages.
+                    if event.isMessageStart, !accumulatedText.isEmpty, !accumulatedText.hasSuffix(" ") {
+                        accumulatedText += " "
+                    }
                     if let delta = event.textDelta {
                         accumulatedText += delta
                         onChunk(ClaudeCLIStreamChunk(accumulatedText: accumulatedText, isFinal: false, totalCostUSD: nil))
                     }
-                    // With no tools there is exactly one message, so the reply
-                    // is complete here. The CLI then spends ~3 s on a post-turn
-                    // summary before its result event; the session is already
-                    // saved and resumes fine, so don't keep the user waiting.
-                    if event.isMessageStop, !accumulatedText.isEmpty {
-                        replyComplete = true
-                        break readLoop
+                    if let tool = event.toolUseName {
+                        onChunk(ClaudeCLIStreamChunk(accumulatedText: accumulatedText, isFinal: false, totalCostUSD: nil, activeTool: tool))
+                    }
+                    if event.isMessageStop {
+                        usage.messageStopped()
+                        // The last message completes the reply. The CLI then
+                        // spends ~3 s on a post-turn summary before its result
+                        // event; the session is already saved and resumes fine,
+                        // so don't keep the user waiting.
+                        if stopReason != "tool_use", !accumulatedText.isEmpty {
+                            replyComplete = true
+                            break readLoop
+                        }
+                        stopReason = nil
                     }
 
                 case "result":
+                    usage.result(event.usage)
                     finalCostUSD = event.totalCostUSD
                     finalDurationMs = event.durationMs
                     if event.sessionId != nil {
@@ -268,7 +287,8 @@ final class ClaudeCLIRunner {
                 sessionId: sessionId,
                 totalCostUSD: nil,
                 durationMs: nil,
-                usage: usage
+                usage: usage.total,
+                contextTokens: usage.lastContext
             )
         }
 
@@ -291,7 +311,8 @@ final class ClaudeCLIRunner {
             sessionId: sessionId,
             totalCostUSD: finalCostUSD,
             durationMs: finalDurationMs,
-            usage: usage
+            usage: usage.total,
+            contextTokens: usage.lastContext
         )
     }
 
@@ -303,7 +324,8 @@ final class ClaudeCLIRunner {
     func buildArgs(
         systemPrompt: String,
         model: String,
-        resumeSessionId: String?
+        resumeSessionId: String?,
+        mcp: MCPTurnConfig? = nil
     ) -> [String] {
         var args: [String] = [
             "--print",
@@ -320,12 +342,20 @@ final class ClaudeCLIRunner {
             "--setting-sources", "",
             "--disable-slash-commands",
             "--strict-mcp-config",
-            "--mcp-config", "{\"mcpServers\":{}}",
+            "--mcp-config", mcp?.configPath ?? "{\"mcpServers\":{}}",
             "--exclude-dynamic-system-prompt-sections",
             // An empty allowlist, not a denylist: a tool added by a future
             // CLI release can't become available to this process.
             "--tools", "",
         ]
+        if let mcp {
+            // Only these may run; print mode refuses anything else. Hidden
+            // tools aren't even offered, which keeps their tokens out.
+            args.append(contentsOf: ["--allowedTools", mcp.allowedTools.joined(separator: ",")])
+            if !mcp.hiddenTools.isEmpty {
+                args.append(contentsOf: ["--disallowedTools", mcp.hiddenTools.joined(separator: ",")])
+            }
+        }
         if let resume = resumeSessionId {
             args.append(contentsOf: ["--resume", resume])
         }
@@ -376,6 +406,7 @@ final class ClaudeCLIRunner {
               let type = obj["type"] as? String else {
             return nil
         }
+        let event = obj["event"] as? [String: Any]
         return ParsedEvent(
             type: type,
             subtype: obj["subtype"] as? String,
@@ -385,8 +416,20 @@ final class ClaudeCLIRunner {
             isMessageStop: (obj["event"] as? [String: Any])?["type"] as? String == "message_stop",
             totalCostUSD: obj["total_cost_usd"] as? Double,
             durationMs: obj["duration_ms"] as? Int,
-            usage: TokenUsage(streamLine: obj)
+            usage: TokenUsage(streamLine: obj),
+            isMessageStart: event?["type"] as? String == "message_start",
+            stopReason: (event?["delta"] as? [String: Any])?["stop_reason"] as? String,
+            toolUseName: event.flatMap(toolUseName(from:))
         )
+    }
+
+    private func toolUseName(from event: [String: Any]) -> String? {
+        guard event["type"] as? String == "content_block_start",
+              let block = event["content_block"] as? [String: Any],
+              block["type"] as? String == "tool_use" else {
+            return nil
+        }
+        return block["name"] as? String
     }
 
     private func extractTextDelta(from obj: [String: Any]) -> String? {
@@ -441,6 +484,9 @@ private struct ParsedEvent {
     let totalCostUSD: Double?
     let durationMs: Int?
     let usage: TokenUsage?
+    let isMessageStart: Bool
+    let stopReason: String?
+    let toolUseName: String?
 }
 
 private final class StderrCollector: @unchecked Sendable {

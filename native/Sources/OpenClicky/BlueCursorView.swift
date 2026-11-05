@@ -9,14 +9,6 @@
 import AppKit
 import SwiftUI
 
-// MARK: - Brand
-
-enum Brand {
-    /// #A0DAFA, always with black text on top.
-    static let blue = Color(red: 160 / 255, green: 218 / 255, blue: 250 / 255)
-    static let nsBlue = NSColor(srgbRed: 160 / 255, green: 218 / 255, blue: 250 / 255, alpha: 1)
-}
-
 // MARK: - Shape
 
 /// The cursor's silhouette: a soft arrowhead with its tip at the top left.
@@ -55,7 +47,7 @@ enum CursorGeometry {
 /// The cursor itself, in colour. A hairline keeps its pale blue visible on a
 /// light menu bar as well as a dark one.
 enum StatusItemIcon {
-    static func make() -> NSImage {
+    static func make(color: CursorColor) -> NSImage {
         let image = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { _ in
             guard let context = NSGraphicsContext.current?.cgContext else { return false }
             let width: CGFloat = 12
@@ -65,7 +57,7 @@ enum StatusItemIcon {
                 flipped: true
             )
             context.addPath(path)
-            context.setFillColor(Brand.nsBlue.cgColor)
+            context.setFillColor(color.nsColor.cgColor)
             context.fillPath()
             context.addPath(path)
             context.setStrokeColor(NSColor.black.withAlphaComponent(0.55).cgColor)
@@ -85,14 +77,15 @@ private struct CursorShape: Shape {
     }
 }
 
-/// The arrow alone: blue fill, white edge, soft shadow.
+/// The arrow alone: coloured fill, white edge, soft shadow.
 struct CursorArrow: View {
     var width: CGFloat = 20
+    var color: CursorColor = .blue
 
     var body: some View {
         ZStack {
             CursorShape().stroke(Color.white, style: StrokeStyle(lineWidth: width * 0.22, lineJoin: .round))
-            CursorShape().fill(Brand.blue)
+            CursorShape().fill(color.color)
         }
         .frame(width: width, height: width * CursorGeometry.aspect)
         .compositingGroup()
@@ -105,12 +98,15 @@ struct CursorArrow: View {
 struct BlueCursorView: View {
     let screenFrame: CGRect
     @ObservedObject var manager: OverlayManager
+    @ObservedObject var preferences = AppPreferences.shared
 
     @State private var captionSize: CGSize = .zero
 
-    private static let arrowWidth: CGFloat = 20
+    private var arrowWidth: CGFloat { preferences.cursorSize.arrowWidth }
     /// Puts the caption below the arrow and slightly to its right.
-    private static let captionGap = CGSize(width: 14, height: 27)
+    private var captionGap: CGSize {
+        CGSize(width: 14, height: arrowWidth * CursorGeometry.aspect + 5)
+    }
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -126,10 +122,15 @@ struct BlueCursorView: View {
     }
 
     private func arrow(tip: CGPoint) -> some View {
-        LivelyCursor(state: manager.voiceState, audioLevel: manager.audioLevel, width: Self.arrowWidth)
+        LivelyCursor(
+            state: manager.voiceState,
+            audioLevel: manager.audioLevel,
+            width: arrowWidth,
+            color: preferences.cursorColor
+        )
             .position(
-                x: tip.x + Self.arrowWidth / 2,
-                y: tip.y + Self.arrowWidth * CursorGeometry.aspect / 2
+                x: tip.x + arrowWidth / 2,
+                y: tip.y + arrowWidth * CursorGeometry.aspect / 2
             )
             .transition(.opacity)
     }
@@ -142,13 +143,39 @@ struct BlueCursorView: View {
                 anchor: tip,
                 size: captionSize,
                 screen: screenFrame.size,
-                gap: Self.captionGap
+                gap: captionGap
             )
-            CursorCaptionView(content: content, audioLevel: manager.audioLevel)
+            CursorCaptionView(
+                content: content,
+                audioLevel: manager.audioLevel,
+                color: preferences.cursorColor,
+                textSize: preferences.captionSize.points
+            )
                 .onGeometryChange(for: CGSize.self, of: \.size) { captionSize = $0 }
+                .overlay(alignment: .topTrailing) {
+                    if manager.isCaptionClosable, manager.hoveredRegion == .caption || manager.hoveredRegion == .close {
+                        CaptionCloseButton(isHovered: manager.hoveredRegion == .close)
+                            .offset(x: CursorHitTest.closeOverhang, y: -CursorHitTest.closeOverhang)
+                            .transition(.opacity)
+                    }
+                }
+                .animation(.easeOut(duration: 0.12), value: manager.hoveredRegion)
                 .offset(x: origin.x, y: origin.y)
                 .transition(.opacity)
+                .onChange(of: globalFrame(origin: origin), initial: true) { _, frame in
+                    manager.captionFrame = frame
+                }
         }
+    }
+
+    /// View-local (top-left origin) to AppKit global (bottom-left origin).
+    private func globalFrame(origin: CGPoint) -> CGRect {
+        CGRect(
+            x: screenFrame.origin.x + origin.x,
+            y: screenFrame.origin.y + screenFrame.height - origin.y - captionSize.height,
+            width: captionSize.width,
+            height: captionSize.height
+        )
     }
 
     /// AppKit global (bottom-left origin) to view-local (top-left origin).
@@ -168,16 +195,17 @@ private struct LivelyCursor: View {
     let state: CompanionState
     let audioLevel: CGFloat
     let width: CGFloat
+    let color: CursorColor
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         if state == .idle || reduceMotion {
-            CursorArrow(width: width)
+            CursorArrow(width: width, color: color)
         } else {
             TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
                 let time = context.date.timeIntervalSinceReferenceDate
-                CursorArrow(width: width)
+                CursorArrow(width: width, color: color)
                     .scaleEffect(scale(at: time), anchor: .topLeading)
                     .rotationEffect(.degrees(tilt(at: time)), anchor: .topLeading)
             }
@@ -203,9 +231,27 @@ private struct LivelyCursor: View {
 
 // MARK: - Caption
 
-private struct CursorCaptionView: View {
+/// Only drawn here. OverlayManager takes the click, since the overlay's
+/// SwiftUI content doesn't receive mouse events.
+private struct CaptionCloseButton: View {
+    let isHovered: Bool
+
+    var body: some View {
+        Image(systemName: "xmark")
+            .font(.system(size: 8, weight: .bold))
+            .foregroundStyle(.white)
+            .frame(width: CursorHitTest.closeSize, height: CursorHitTest.closeSize)
+            .background(Circle().fill(.black.opacity(isHovered ? 0.95 : 0.72)))
+            .overlay(Circle().strokeBorder(.white.opacity(0.35), lineWidth: 0.5))
+            .shadow(color: .black.opacity(0.25), radius: 2, y: 1)
+    }
+}
+
+struct CursorCaptionView: View {
     let content: CursorCaption
     let audioLevel: CGFloat
+    let color: CursorColor
+    let textSize: CGFloat
 
     var body: some View {
         Group {
@@ -214,13 +260,13 @@ private struct CursorCaptionView: View {
                 EmptyView()
             case .listening(let transcript):
                 HStack(spacing: 8) {
-                    VoiceBars(audioLevel: audioLevel)
+                    VoiceBars(audioLevel: audioLevel, color: color.textColor)
                     captionText(transcript.isEmpty ? Strings.listening : transcript)
                 }
-            case .thinking:
+            case .thinking(let detail):
                 HStack(spacing: 2) {
-                    captionText(Strings.thinking)
-                    ThinkingDots()
+                    captionText(detail ?? Strings.thinking)
+                    ThinkingDots(color: color.textColor)
                 }
             case .text(let text):
                 captionText(text)
@@ -236,7 +282,7 @@ private struct CursorCaptionView: View {
                 topTrailingRadius: 10,
                 style: .continuous
             )
-            .fill(Brand.blue)
+            .fill(color.color)
             .shadow(color: .black.opacity(0.28), radius: 8, y: 3)
         )
     }
@@ -244,8 +290,8 @@ private struct CursorCaptionView: View {
     private func captionText(_ text: String) -> some View {
         WrapAtWidth(maxWidth: 278) {
             Text(text)
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(.black)
+                .font(.system(size: textSize, weight: .medium))
+                .foregroundStyle(color.textColor)
                 .lineSpacing(2)
         }
     }
@@ -271,6 +317,7 @@ private struct WrapAtWidth: Layout {
 
 private struct VoiceBars: View {
     let audioLevel: CGFloat
+    let color: Color
 
     private let profile: [CGFloat] = [0.5, 0.8, 1, 0.8, 0.5]
 
@@ -279,7 +326,7 @@ private struct VoiceBars: View {
             HStack(spacing: 2) {
                 ForEach(profile.indices, id: \.self) { index in
                     Capsule()
-                        .fill(Color.black)
+                        .fill(color)
                         .frame(width: 2.5, height: height(index, at: context.date))
                 }
             }
@@ -295,13 +342,15 @@ private struct VoiceBars: View {
 }
 
 private struct ThinkingDots: View {
+    let color: Color
+
     var body: some View {
         TimelineView(.periodic(from: .now, by: 0.35)) { context in
             let step = Int(context.date.timeIntervalSinceReferenceDate / 0.35) % 3
             HStack(spacing: 2) {
                 ForEach(0..<3, id: \.self) { index in
                     Circle()
-                        .fill(Color.black.opacity(index == step ? 0.9 : 0.3))
+                        .fill(color.opacity(index == step ? 0.9 : 0.3))
                         .frame(width: 3.5, height: 3.5)
                 }
             }

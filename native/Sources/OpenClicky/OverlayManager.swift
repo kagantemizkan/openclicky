@@ -4,6 +4,9 @@
 //  draw it. The cursor never reads or follows the user's mouse. It waits at
 //  its home below the menu bar icon, shows listening and thinking where it
 //  stands, flies to whatever Claude points at, and later flies back home.
+//  The user can drag it to a new home or close its message. Mouse moves are
+//  only compared with the cursor's own frames, to know when to stop letting
+//  clicks through, and are not kept.
 //
 
 import AppKit
@@ -26,15 +29,22 @@ struct BlueCursorTarget: Equatable {
 enum CursorCaption: Equatable {
     case none
     case listening(transcript: String)
-    case thinking
+    /// `detail` replaces the plain wording, e.g. while reading an app.
+    case thinking(detail: String?)
     case text(String)
 
-    static func resolve(state: CompanionState, reply: String, label: String?, transcript: String) -> CursorCaption {
+    static func resolve(
+        state: CompanionState,
+        reply: String,
+        label: String?,
+        transcript: String,
+        thinkingDetail: String? = nil
+    ) -> CursorCaption {
         switch state {
         case .listening:
             return .listening(transcript: transcript)
         case .thinking where reply.isEmpty:
-            return .thinking
+            return .thinking(detail: thinkingDetail)
         default:
             if !reply.isEmpty { return .text(reply) }
             if let label, !label.isEmpty { return .text(label) }
@@ -65,21 +75,24 @@ enum CursorFlight {
 @MainActor
 final class OverlayManager: ObservableObject {
     /// Global AppKit coordinate of the cursor's tip.
-    @Published private(set) var cursorLocation: CGPoint = .zero
-    @Published private(set) var isCursorVisible = false
-    @Published private(set) var pointLabel: String?
+    @Published private(set) var cursorLocation: CGPoint = .zero { didSet { updatePointerRegion() } }
+    @Published private(set) var isCursorVisible = false { didSet { updatePointerRegion() } }
+    @Published private(set) var pointLabel: String? { didSet { updatePointerRegion() } }
+    /// The part of the cursor the mouse is over.
+    @Published private(set) var hoveredRegion: CursorHit?
 
     @Published var voiceState: CompanionState = .idle { didSet { stateDidChange() } }
     /// 0…1 normalised mic power.
     @Published var audioLevel: CGFloat = 0
     @Published var partialTranscript = ""
+    @Published var thinkingDetail: String?
     /// The reply so far. The view model clears it a few seconds after a turn.
     @Published var streamingResponseText = "" { didSet { stateDidChange() } }
     /// During a lesson the cursor stays on the current step between turns.
     @Published var isLessonActive = false { didSet { stateDidChange() } }
     @Published var showsCursorAtRest: Bool {
         didSet {
-            UserDefaults.standard.set(showsCursorAtRest, forKey: Self.showsAtRestKey)
+            defaults.set(showsCursorAtRest, forKey: Self.showsAtRestKey)
             stateDidChange()
         }
     }
@@ -88,29 +101,69 @@ final class OverlayManager: ObservableObject {
     var homeProvider: () -> CGPoint? = { nil } {
         didSet { goHome(animated: false) }
     }
+    /// The close button was pressed.
+    var onDismissMessage: () -> Void = {}
+    /// Replaced by tests.
+    var pointerLocation: () -> CGPoint = { NSEvent.mouseLocation }
+    var screenFrames: () -> [CGRect] = { NSScreen.screens.map(\.frame) }
+
+    /// Where the view drew the caption, in global AppKit coordinates.
+    var captionFrame: CGRect? { didSet { updatePointerRegion() } }
+
+    /// Whether the user has moved the cursor's resting place.
+    var hasCustomHome: Bool { customHome != nil }
+
+    /// Only a written reply can be closed.
+    var isCaptionClosable: Bool {
+        if case .text = caption { return true }
+        return false
+    }
 
     var caption: CursorCaption {
         CursorCaption.resolve(
             state: voiceState,
             reply: streamingResponseText,
             label: pointLabel,
-            transcript: partialTranscript
+            transcript: partialTranscript,
+            thinkingDetail: thinkingDetail
         )
     }
 
     /// How long the cursor lingers where it pointed before heading home.
     private static let lingerSeconds: TimeInterval = 4
     private static let showsAtRestKey = "com.proyecto26.openclicky.showsCursorAtRest"
+    private static let homeXKey = "com.proyecto26.openclicky.cursorHomeX"
+    private static let homeYKey = "com.proyecto26.openclicky.cursorHomeY"
+    /// Movement below this is a click rather than a drag.
+    private static let dragThreshold: CGFloat = 3
 
     private let logger = Logger(subsystem: "com.proyecto26.openclicky", category: "OverlayManager")
+    private let defaults: UserDefaults
     private var windows: [OverlayWindow] = []
     private var screenParameterObserver: NSObjectProtocol?
+    private var pointerMonitors: [Any] = []
     private var flightTask: Task<Void, Never>?
     private var goHomeTask: Task<Void, Never>?
+    private var customHome: CGPoint?
+    /// While the tip is on what Claude pointed at, the arrow stays
+    /// click-through, or it would swallow the click the user was told to make.
+    private var isOnTarget = false
+    private var press: PointerPress?
 
-    init() {
-        showsCursorAtRest = UserDefaults.standard.object(forKey: Self.showsAtRestKey) as? Bool ?? true
+    private enum PointerPress {
+        case close
+        /// `grab` is the tip's offset from the mouse.
+        case drag(grab: CGVector, start: CGPoint, moved: Bool)
+    }
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        showsCursorAtRest = defaults.object(forKey: Self.showsAtRestKey) as? Bool ?? true
+        if defaults.object(forKey: Self.homeXKey) != nil {
+            customHome = CGPoint(x: defaults.double(forKey: Self.homeXKey), y: defaults.double(forKey: Self.homeYKey))
+        }
         installScreenParameterObserver()
+        installPointerMonitors()
         rebuildWindowsForCurrentScreens()
     }
 
@@ -118,12 +171,15 @@ final class OverlayManager: ObservableObject {
         if let observer = screenParameterObserver {
             NotificationCenter.default.removeObserver(observer)
         }
+        pointerMonitors.forEach(NSEvent.removeMonitor)
     }
 
     /// Flies the cursor to `target`, replacing any flight under way.
     func flyTo(_ target: BlueCursorTarget) {
         logger.info("flyTo \(String(describing: target.globalLocation), privacy: .public) label=\(target.label ?? "nil", privacy: .public)")
         goHomeTask?.cancel()
+        press = nil
+        isOnTarget = true
         pointLabel = nil
         isCursorVisible = true
         fly(to: target.globalLocation) { [weak self] in
@@ -146,7 +202,16 @@ final class OverlayManager: ObservableObject {
 
     // MARK: - Resting
 
+    /// Sends the cursor back under the menu bar icon.
+    func forgetCustomHome() {
+        customHome = nil
+        defaults.removeObject(forKey: Self.homeXKey)
+        defaults.removeObject(forKey: Self.homeYKey)
+        goHome(animated: true)
+    }
+
     private func stateDidChange() {
+        updatePointerRegion()
         goHomeTask?.cancel()
         if voiceState != .idle {
             isCursorVisible = true
@@ -161,8 +226,12 @@ final class OverlayManager: ObservableObject {
     }
 
     private func goHome(animated: Bool) {
+        guard press == nil else { return }
+        isOnTarget = false
         pointLabel = nil
-        let home = homeProvider() ?? fallbackHome
+        // A home on a display that has since gone is ignored, not forgotten.
+        let usableHome = customHome.flatMap { home in isOnAScreen(home) ? home : nil }
+        let home = usableHome ?? homeProvider() ?? fallbackHome
         let settle = { [weak self] in
             guard let self else { return }
             self.isCursorVisible = self.showsCursorAtRest || self.voiceState != .idle
@@ -179,6 +248,108 @@ final class OverlayManager: ObservableObject {
     private var fallbackHome: CGPoint {
         guard let frame = NSScreen.screens.first?.frame else { return .zero }
         return CGPoint(x: frame.maxX - 160, y: frame.maxY - 48)
+    }
+
+    // MARK: - Mouse
+
+    private func isOnAScreen(_ point: CGPoint) -> Bool {
+        screenFrames().contains { $0.contains(point) }
+    }
+
+    private func region(at point: CGPoint) -> CursorHit? {
+        guard isCursorVisible else { return nil }
+        let width = AppPreferences.shared.cursorSize.arrowWidth
+        let height = width * CursorGeometry.aspect
+        return CursorHitTest.hit(
+            point: point,
+            captionFrame: caption == .none ? nil : captionFrame,
+            closable: isCaptionClosable,
+            arrowFrame: isOnTarget
+                ? nil
+                : CGRect(x: cursorLocation.x, y: cursorLocation.y - height, width: width, height: height)
+        )
+    }
+
+    private func installPointerMonitors() {
+        let global = NSEvent.addGlobalMonitorForEvents(matching: .mouseMoved) { [weak self] _ in
+            MainActor.assumeIsolated { self?.updatePointerRegion() }
+        }
+        let local = NSEvent.addLocalMonitorForEvents(matching: .mouseMoved) { [weak self] event in
+            MainActor.assumeIsolated { self?.updatePointerRegion() }
+            return event
+        }
+        pointerMonitors = [global, local].compactMap { $0 }
+    }
+
+    /// Catches clicks only over the cursor, and lets all others through. Also
+    /// runs when the cursor changes, or a closed caption would keep catching
+    /// clicks at the spot where it was.
+    private func updatePointerRegion() {
+        guard press == nil else { return }
+        let region = region(at: pointerLocation())
+        for window in windows where window.ignoresMouseEvents != (region == nil) {
+            window.ignoresMouseEvents = region == nil
+        }
+        guard region != hoveredRegion else { return }
+        hoveredRegion = region
+        switch region {
+        case .caption, .arrow:
+            NSCursor.openHand.set()
+        case .close, nil:
+            NSCursor.arrow.set()
+        }
+    }
+
+    func press(at point: CGPoint) {
+        switch region(at: point) {
+        case .close:
+            press = .close
+        case .caption, .arrow:
+            goHomeTask?.cancel()
+            flightTask?.cancel()
+            press = .drag(
+                grab: CGVector(dx: cursorLocation.x - point.x, dy: cursorLocation.y - point.y),
+                start: point,
+                moved: false
+            )
+        case nil:
+            updatePointerRegion()
+        }
+    }
+
+    func drag(to point: CGPoint) {
+        guard case .drag(let grab, let start, var moved) = press else { return }
+        moved = moved || hypot(point.x - start.x, point.y - start.y) >= Self.dragThreshold
+        press = .drag(grab: grab, start: start, moved: moved)
+        guard moved else { return }
+        NSCursor.closedHand.set()
+        isOnTarget = false
+        let tip = CGPoint(x: point.x + grab.dx, y: point.y + grab.dy)
+        if isOnAScreen(tip) {
+            cursorLocation = tip
+        }
+    }
+
+    func release(at point: CGPoint) {
+        let finished = press
+        press = nil
+        switch finished {
+        case .close:
+            if region(at: point) == .close {
+                onDismissMessage()
+            }
+        case .drag(_, _, let moved):
+            if moved {
+                customHome = cursorLocation
+                defaults.set(Double(cursorLocation.x), forKey: Self.homeXKey)
+                defaults.set(Double(cursorLocation.y), forKey: Self.homeYKey)
+            }
+            hoveredRegion = nil
+            stateDidChange()
+        case nil:
+            break
+        }
+        updatePointerRegion()
     }
 
     // MARK: - Flight
@@ -232,7 +403,7 @@ final class OverlayManager: ObservableObject {
         }
         windows = NSScreen.screens.map { screen in
             let view = BlueCursorView(screenFrame: screen.frame, manager: self)
-            let window = OverlayWindow(screen: screen, rootView: AnyView(view))
+            let window = OverlayWindow(screen: screen, rootView: AnyView(view), manager: self)
             window.orderFrontRegardless()
             return window
         }

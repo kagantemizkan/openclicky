@@ -16,6 +16,7 @@
 //
 
 import AppKit
+import Combine
 import SwiftUI
 import os
 
@@ -53,6 +54,26 @@ final class OpenClickyPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
+/// A menu item that runs a closure.
+private final class ActionMenuItem: NSMenuItem {
+    private let handler: () -> Void
+
+    init(_ title: String, handler: @escaping () -> Void) {
+        self.handler = handler
+        super.init(title: title, action: #selector(run), keyEquivalent: "")
+        target = self
+    }
+
+    @available(*, unavailable)
+    required init(coder: NSCoder) {
+        fatalError("not used")
+    }
+
+    @objc private func run() {
+        handler()
+    }
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let logger = Logger(subsystem: "com.proyecto26.openclicky", category: "AppDelegate")
@@ -63,6 +84,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var globalKeyEventMonitor: Any?
     private let viewModel = OpenClickyViewModel()
     private var sessionBridge: SessionBridge?
+    private var settingsWindow: NSWindow?
+    private var observations: Set<AnyCancellable> = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -115,11 +138,73 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func installStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.button?.image = StatusItemIcon.make()
         item.button?.setAccessibilityLabel("OpenClicky")
         item.button?.target = self
-        item.button?.action = #selector(togglePanel(_:))
+        item.button?.action = #selector(statusItemClicked(_:))
+        item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
         statusItem = item
+
+        viewModel.preferences.$cursorColor
+            .sink { [weak item] color in item?.button?.image = StatusItemIcon.make(color: color) }
+            .store(in: &observations)
+    }
+
+    /// Left click opens the panel. Right or Control click opens the menu.
+    @objc private func statusItemClicked(_ sender: Any?) {
+        guard let event = NSApp.currentEvent else { return togglePanel(sender) }
+        if event.type == .rightMouseUp || event.modifierFlags.contains(.control) {
+            showStatusMenu()
+        } else {
+            togglePanel(sender)
+        }
+    }
+
+    private func showStatusMenu() {
+        guard let button = statusItem?.button else { return }
+        dismissPanel()
+        let menu = NSMenu()
+        if viewModel.isTutorMode {
+            menu.addItem(ActionMenuItem(Strings.endLesson) { [weak self] in self?.viewModel.setTutorMode(false) })
+        } else {
+            let lessons = NSMenu()
+            for choice in viewModel.lessonChoices() {
+                lessons.addItem(ActionMenuItem(choice.menuTitle) { [weak self] in self?.viewModel.startLesson(choice) })
+            }
+            let lessonsItem = NSMenuItem(title: Strings.startLesson, action: nil, keyEquivalent: "")
+            lessonsItem.submenu = lessons
+            lessonsItem.isEnabled = !lessons.items.isEmpty
+            menu.addItem(lessonsItem)
+        }
+        menu.addItem(ActionMenuItem(Strings.newSession) { [weak self] in self?.viewModel.sessions.startNew() })
+        if viewModel.overlayManager.hasCustomHome {
+            menu.addItem(ActionMenuItem(Strings.resetCursorPosition) { [weak self] in
+                self?.viewModel.overlayManager.forgetCustomHome()
+            })
+        }
+        menu.addItem(.separator())
+        menu.addItem(ActionMenuItem(Strings.settingsMenu) { [weak self] in self?.openSettings() })
+        menu.addItem(.separator())
+        menu.addItem(ActionMenuItem(Strings.quitApp) { NSApp.terminate(nil) })
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.maxY + 6), in: button)
+    }
+
+    private func openSettings() {
+        dismissPanel()
+        if settingsWindow == nil {
+            let window = NSWindow(contentViewController: NSHostingController(rootView: SettingsView(
+                viewModel: viewModel,
+                overlay: viewModel.overlayManager,
+                preferences: viewModel.preferences
+            )))
+            window.title = Strings.settingsTitle
+            window.styleMask = [.titled, .closable]
+            window.isReleasedWhenClosed = false
+            window.center()
+            settingsWindow = window
+        }
+        // A menu bar app has to activate itself for its window to take focus.
+        NSApp.activate(ignoringOtherApps: true)
+        settingsWindow?.makeKeyAndOrderFront(nil)
     }
 
     @objc private func togglePanel(_ sender: Any?) {
@@ -220,8 +305,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let hostingView = NSHostingView(rootView: PanelView(
             viewModel: viewModel,
             sessions: viewModel.sessions,
-            overlay: viewModel.overlayManager,
             onDismiss: { [weak self] in self?.dismissPanel() },
+            onOpenSettings: { [weak self] in self?.openSettings() },
             onHeightChange: { [weak panel] height in
                 guard let panel, height > 0 else { return }
                 // Grow downwards: the top stays under the menu bar.

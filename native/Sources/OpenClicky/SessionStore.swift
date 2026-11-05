@@ -67,6 +67,31 @@ extension TokenUsage {
     }
 }
 
+/// Adds up a turn's messages. A reply that uses tools has several, each
+/// reporting its own usage; the result line only matters if none completed.
+struct TurnUsage {
+    private(set) var total: TokenUsage?
+    private(set) var lastContext: Int?
+    private var current: TokenUsage?
+
+    mutating func message(_ usage: TokenUsage?) {
+        if let usage { current = usage }
+    }
+
+    mutating func messageStopped() {
+        guard let finished = current else { return }
+        total = (total ?? TokenUsage()) + finished
+        lastContext = finished.contextSize
+        current = nil
+    }
+
+    mutating func result(_ usage: TokenUsage?) {
+        guard total == nil, let usage else { return }
+        total = usage
+        lastContext = usage.contextSize
+    }
+}
+
 struct ChatSession: Codable, Equatable, Identifiable {
     let id: UUID
     var name: String
@@ -147,7 +172,13 @@ final class SessionStore: ObservableObject {
 
     /// Saves a finished turn. `prompt` names a still-unnamed session; pass nil
     /// for turns the user didn't ask for.
-    func recordTurn(claudeSessionId: String?, usage: TokenUsage?, prompt: String?, now: Date = Date()) {
+    func recordTurn(
+        claudeSessionId: String?,
+        usage: TokenUsage?,
+        contextTokens: Int? = nil,
+        prompt: String?,
+        now: Date = Date()
+    ) {
         mutateActive { session in
             if let claudeSessionId { session.claudeSessionId = claudeSessionId }
             if session.turns == 0, !session.isNamedByUser, let prompt {
@@ -157,7 +188,7 @@ final class SessionStore: ObservableObject {
             session.updatedAt = now
             if let usage {
                 session.usage = session.usage + usage
-                session.lastContextTokens = usage.contextSize
+                session.lastContextTokens = contextTokens ?? usage.contextSize
             }
         }
     }

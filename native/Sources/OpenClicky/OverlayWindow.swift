@@ -1,24 +1,22 @@
 //
 //  OverlayWindow.swift
-//  One transparent full-screen NSWindow per connected display. Hosts
-//  the SwiftUI BlueCursorView. The window itself is click-through and
-//  non-activating so the user's frontmost app keeps focus; OverlayManager
-//  drives show/hide and the published target coordinate.
+//  One transparent full-screen window per connected display, hosting the
+//  SwiftUI BlueCursorView. It lets clicks through except while the mouse is
+//  over the caption or a movable cursor, which OverlayManager decides.
 //
-//  Not based on NSPanel like the menu-bar panel — a plain borderless
-//  NSWindow with .screenSaver level sits above most macOS UI including
-//  submenus and tooltips, which is what you want for a "point at this
-//  thing" overlay.
+//  A non-activating panel, so grabbing the caption leaves the user's app in
+//  front. The .screenSaver level sits above most macOS UI, including submenus
+//  and tooltips, which a "point at this thing" overlay needs.
 //
 
 import AppKit
 import SwiftUI
 
-final class OverlayWindow: NSWindow {
-    init(screen: NSScreen, rootView: AnyView) {
+final class OverlayWindow: NSPanel {
+    init(screen: NSScreen, rootView: AnyView, manager: OverlayManager) {
         super.init(
             contentRect: screen.frame,
-            styleMask: .borderless,
+            styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )
@@ -27,10 +25,14 @@ final class OverlayWindow: NSWindow {
         backgroundColor = .clear
         level = .screenSaver
         ignoresMouseEvents = true
+        acceptsMouseMovedEvents = true
         collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
         isReleasedWhenClosed = false
         hasShadow = false
         hidesOnDeactivate = false
+
+        let bounds = NSRect(origin: .zero, size: screen.frame.size)
+        let container = NSView(frame: bounds)
 
         let hostingView = NSHostingView(rootView: rootView)
         // Disable NSHostingView's default "size to fit content" behaviour.
@@ -40,8 +42,15 @@ final class OverlayWindow: NSWindow {
         hostingView.sizingOptions = []
         hostingView.translatesAutoresizingMaskIntoConstraints = true
         hostingView.autoresizingMask = [.width, .height]
-        hostingView.frame = NSRect(origin: .zero, size: screen.frame.size)
-        contentView = hostingView
+        hostingView.frame = bounds
+        container.addSubview(hostingView)
+
+        let interaction = OverlayInteractionView(manager: manager)
+        interaction.autoresizingMask = [.width, .height]
+        interaction.frame = bounds
+        container.addSubview(interaction)
+
+        contentView = container
 
         setFrame(screen.frame, display: true)
         setFrameOrigin(screen.frame.origin)
@@ -50,4 +59,34 @@ final class OverlayWindow: NSWindow {
     // Overlay never accepts focus; keep the frontmost app key.
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
+}
+
+/// Passes presses to OverlayManager, which knows what is under them.
+private final class OverlayInteractionView: NSView {
+    private weak var manager: OverlayManager?
+
+    init(manager: OverlayManager) {
+        self.manager = manager
+        super.init(frame: .zero)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("not used")
+    }
+
+    /// The first click has to work without the app being active.
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func mouseDown(with event: NSEvent) {
+        MainActor.assumeIsolated { manager?.press(at: NSEvent.mouseLocation) }
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        MainActor.assumeIsolated { manager?.drag(to: NSEvent.mouseLocation) }
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        MainActor.assumeIsolated { manager?.release(at: NSEvent.mouseLocation) }
+    }
 }

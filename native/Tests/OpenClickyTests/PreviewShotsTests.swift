@@ -43,12 +43,20 @@ final class PreviewShotsTests: XCTestCase {
             let panel = PanelView(
                 viewModel: viewModel,
                 sessions: sessions,
-                overlay: viewModel.overlayManager,
                 onDismiss: {},
+                onOpenSettings: {},
                 onHeightChange: { _ in }
             )
             .background(panelColor)
             try await save(panel, size: CGSize(width: PanelView.width, height: 400), appearance: appearance, to: "\(directory)/panel-\(name).png")
+
+            let settings = SettingsView(
+                viewModel: viewModel,
+                overlay: viewModel.overlayManager,
+                preferences: viewModel.preferences
+            )
+            .background(panelColor)
+            try await save(settings, size: CGSize(width: 480, height: 420), appearance: appearance, to: "\(directory)/settings-\(name).png")
 
             let frame = CGRect(x: 0, y: 0, width: 640, height: 240)
             let overlay = OverlayManager()
@@ -71,17 +79,24 @@ final class PreviewShotsTests: XCTestCase {
             overlay.voiceState = .speaking
             overlay.streamingResponseText = "vinyet eklemek iki adım sürüyor. önce sağ üstteki filtreler düğmesine tıkla, sonra listeden vinyeti seçeceğiz."
             try await shot("speaking")
+            overlay.pointerLocation = { [weak overlay] in
+                guard let frame = overlay?.captionFrame else { return .zero }
+                return CGPoint(x: frame.midX, y: frame.midY)
+            }
+            let drawnFrame = overlay.captionFrame
+            overlay.captionFrame = drawnFrame
+            try await shot("hover")
         }
 
         try await save(
-            Image(nsImage: StatusItemIcon.make()).padding(4).background(Color(white: 0.93)),
+            Image(nsImage: StatusItemIcon.make(color: .blue)).padding(4).background(Color(white: 0.93)),
             size: CGSize(width: 26, height: 26),
             appearance: nil,
             to: "\(directory)/status-light.png",
             scale: 6
         )
         try await save(
-            Image(nsImage: StatusItemIcon.make()).padding(4).background(Color(white: 0.15)),
+            Image(nsImage: StatusItemIcon.make(color: .blue)).padding(4).background(Color(white: 0.15)),
             size: CGSize(width: 26, height: 26),
             appearance: nil,
             to: "\(directory)/status-dark.png",

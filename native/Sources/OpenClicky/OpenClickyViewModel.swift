@@ -48,6 +48,16 @@ enum ClaudeModel: String, CaseIterable, Identifiable {
     }
 }
 
+/// An app the tutor can be started for.
+struct LessonChoice: Identifiable, Equatable {
+    /// Bundle id, which identifies the app even without a connection.
+    let id: String
+    let appName: String
+    let menuTitle: String
+    let appURL: URL?
+    let connection: MCPConnection?
+}
+
 @MainActor
 final class OpenClickyViewModel: ObservableObject {
     // MARK: - Claude CLI + session
@@ -59,6 +69,7 @@ final class OpenClickyViewModel: ObservableObject {
     @Published var streamingText: String = ""
     @Published var lastError: String?
     let sessions: SessionStore
+    let preferences = AppPreferences.shared
     @Published var selectedModel: ClaudeModel = ClaudeModel.loadPersisted() {
         didSet { selectedModel.persist() }
     }
@@ -107,6 +118,73 @@ final class OpenClickyViewModel: ObservableObject {
     private var tutorSettleTask: Task<Void, Never>?
     private var tutorLookPending = false
     private var tutorAutomaticLooks = 0
+    /// The app chosen when a lesson was started from a menu.
+    @Published private(set) var lessonChoice: LessonChoice?
+    /// A menu-started lesson has no goal yet, so clicks mustn't spend tokens
+    /// until the user has said what they want to learn.
+    private var lessonAwaitsGoal = false
+
+    var lessonStatus: String {
+        lessonChoice.map { Strings.lessonRunning($0.appName) } ?? Strings.lessonRunningGeneric
+    }
+
+    /// The front app, then each installed app with a connection.
+    func lessonChoices() -> [LessonChoice] {
+        var choices: [LessonChoice] = []
+        let ownId = Bundle.main.bundleIdentifier
+        if let front = NSWorkspace.shared.frontmostApplication,
+           let id = front.bundleIdentifier, id != ownId, let name = front.localizedName {
+            choices.append(LessonChoice(
+                id: id,
+                appName: name,
+                menuTitle: Strings.currentAppNamed(name),
+                appURL: front.bundleURL,
+                connection: MCPConnection.all.first { $0.bundleId == id }
+            ))
+        }
+        for connection in MCPConnection.all where !choices.contains(where: { $0.id == connection.bundleId }) {
+            guard let url = connection.appURL else { continue }
+            choices.append(LessonChoice(
+                id: connection.bundleId,
+                appName: connection.displayName,
+                menuTitle: connection.displayName,
+                appURL: url,
+                connection: connection
+            ))
+        }
+        return choices
+    }
+
+    /// Brings the app forward and asks what to learn, in a session of its own.
+    /// The greeting is local: it costs nothing until the user answers.
+    func startLesson(_ choice: LessonChoice) {
+        cancelCurrentTurn()
+        sessions.startNew(name: Strings.lessonSessionName(choice.appName))
+        setTutorMode(false)
+        lessonChoice = choice
+        setTutorMode(true)
+        lessonAwaitsGoal = true
+
+        if let url = choice.appURL {
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.activates = true
+            NSWorkspace.shared.openApplication(at: url, configuration: configuration)
+        }
+
+        turnGeneration += 1
+        let thisTurn = turnGeneration
+        let greeting = Strings.lessonGreeting(choice.appName)
+        streamingText = greeting
+        state = .speaking
+        currentTask = Task { @MainActor in
+            if preferences.speaksReplies {
+                await textToSpeech.speak(greeting)
+            }
+            guard turnGeneration == thisTurn, !Task.isCancelled else { return }
+            state = .idle
+            scheduleResponseFade(for: thisTurn)
+        }
+    }
 
     init(sessions: SessionStore? = nil) {
         self.sessions = sessions ?? SessionStore()
@@ -149,6 +227,10 @@ final class OpenClickyViewModel: ObservableObject {
                 self?.handleHotkeyTransition(transition)
             }
             .store(in: &observations)
+
+        // Closing a message also stops whatever is producing it. A lesson
+        // stays on, and carries on from the next click.
+        overlayManager.onDismissMessage = { [weak self] in self?.cancelCurrentTurn() }
 
         // Mirror state into OverlayManager so the cursor can show it
         // without OverlayManager depending on the view model.
@@ -315,6 +397,10 @@ final class OpenClickyViewModel: ObservableObject {
         tutorLookPending = false
         tutorSettleTask?.cancel()
         tutorSettleTask = nil
+        if !enabled {
+            lessonChoice = nil
+            lessonAwaitsGoal = false
+        }
 
         if enabled {
             tutorClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseUp) { [weak self] _ in
@@ -335,7 +421,7 @@ final class OpenClickyViewModel: ObservableObject {
         tutorSettleTask?.cancel()
         tutorSettleTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(TutorMode.settleSeconds * 1_000_000_000))
-            guard let self, !Task.isCancelled, self.isTutorMode else { return }
+            guard let self, !Task.isCancelled, self.isTutorMode, !self.lessonAwaitsGoal else { return }
             // Busy talking or thinking: look again when this turn ends.
             guard self.state == .idle, !self.isRunningTurn, self.pendingDispatch == nil else {
                 self.tutorLookPending = true
@@ -405,9 +491,12 @@ final class OpenClickyViewModel: ObservableObject {
         state = thenSpeak ? .thinking : state
         streamingText = ""
         lastError = nil
+        if userPrompt != TutorMode.lookPrompt { lessonAwaitsGoal = false }
+        let frontmost = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
 
         currentTask = Task { @MainActor in
             defer {
+                if self.turnGeneration == thisTurn { self.overlayManager.thinkingDetail = nil }
                 // Only clear the flag if this task is still the current
                 // generation. If the user interrupted us, cancelCurrentTurn
                 // already bumped the counter + reset isRunningTurn, and a
@@ -441,20 +530,37 @@ final class OpenClickyViewModel: ObservableObject {
                     images: contentImages
                 )
 
+                let attached = MCPConnections.turnConfig(for: MCPConnections.connections(
+                    enabled: preferences.enabledConnections,
+                    frontmostBundleId: frontmost,
+                    lessonConnection: lessonChoice?.connection
+                ))
+
                 let result = try await runner.ask(
                     messages: [message],
-                    systemPrompt: TutorMode.systemPrompt(base: Self.systemPrompt, active: isTutorMode),
+                    systemPrompt: TutorMode.systemPrompt(
+                        base: Self.systemPrompt + preferences.replyLength.promptNote,
+                        active: isTutorMode,
+                        lessonApp: lessonChoice?.appName,
+                        connectedApps: attached?.connected.map(\.displayName) ?? []
+                    ),
                     model: selectedModel.rawValue,
-                    resumeSessionId: resume
+                    resumeSessionId: resume,
+                    mcp: attached?.config
                 ) { [weak self] chunk in
                     Task { @MainActor [weak self] in
-                        self?.streamingText = TutorMode.displayText(chunk.accumulatedText)
+                        guard let self, self.turnGeneration == thisTurn else { return }
+                        self.streamingText = TutorMode.displayText(chunk.accumulatedText)
+                        if let tool = chunk.activeTool, let app = MCPConnection.owner(ofTool: tool) {
+                            self.overlayManager.thinkingDetail = Strings.lookingAt(app.displayName)
+                        }
                     }
                 }
 
                 sessions.recordTurn(
                     claudeSessionId: result.sessionId,
                     usage: result.usage,
+                    contextTokens: result.contextTokens,
                     prompt: userPrompt == TutorMode.lookPrompt ? nil : userPrompt
                 )
 
@@ -502,7 +608,7 @@ final class OpenClickyViewModel: ObservableObject {
                     ))
                 }
 
-                if thenSpeak {
+                if thenSpeak, preferences.speaksReplies {
                     await textToSpeech.speak(parsed.spokenText)
                 }
 
