@@ -80,6 +80,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         installStatusItem()
+        // The cursor waits just below its menu bar icon.
+        viewModel.overlayManager.homeProvider = { [weak self] in
+            guard let button = self?.statusItem?.button, let window = button.window else { return nil }
+            let frame = window.convertToScreen(button.frame)
+            return CGPoint(x: frame.midX - 4, y: frame.minY - 6)
+        }
         // Global Esc monitor lives for the whole app lifetime so a
         // turn can be cancelled even after the panel auto-dismissed
         // (common case: kicked off a turn, clicked out, OpenClicky still
@@ -109,36 +115,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func installStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.button?.image = Self.makeStatusItemImage()
-        item.button?.image?.isTemplate = true
+        item.button?.image = StatusItemIcon.make()
+        item.button?.setAccessibilityLabel("OpenClicky")
         item.button?.target = self
         item.button?.action = #selector(togglePanel(_:))
         statusItem = item
-    }
-
-    /// Primary source: SF Symbol `cursorarrow.click.2` (macOS 14+).
-    /// Fallback 1: `cursorarrow` (present on every macOS version we target).
-    /// Fallback 2: a 14-pt "C" rendered into an NSImage so the menu bar
-    /// never appears blank even on minimum-viable SF symbol sets.
-    private static func makeStatusItemImage() -> NSImage {
-        if let symbol = NSImage(systemSymbolName: "cursorarrow.click.2", accessibilityDescription: "OpenClicky") {
-            return symbol
-        }
-        if let fallback = NSImage(systemSymbolName: "cursorarrow", accessibilityDescription: "OpenClicky") {
-            return fallback
-        }
-        let size = NSSize(width: 14, height: 14)
-        let image = NSImage(size: size)
-        image.lockFocus()
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 12, weight: .bold),
-            .foregroundColor: NSColor.labelColor,
-        ]
-        let string = NSAttributedString(string: "C", attributes: attrs)
-        string.draw(at: NSPoint(x: 3, y: 0))
-        image.unlockFocus()
-        image.accessibilityDescription = "OpenClicky"
-        return image
     }
 
     @objc private func togglePanel(_ sender: Any?) {
@@ -228,28 +209,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func makePanel() -> NSPanel {
-        let contentView = PanelView(viewModel: viewModel) { [weak self] in
-            self?.dismissPanel()
-        }
-        let hostingView = NSHostingView(rootView: contentView)
-        hostingView.frame = NSRect(x: 0, y: 0, width: 360, height: 420)
-
+        let contentRect = NSRect(x: 0, y: 0, width: PanelView.width, height: 360)
         let panel = OpenClickyPanel(
-            contentRect: hostingView.frame,
+            contentRect: contentRect,
             styleMask: [.borderless, .nonactivatingPanel, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
-        panel.contentView = hostingView
+
+        let hostingView = NSHostingView(rootView: PanelView(
+            viewModel: viewModel,
+            sessions: viewModel.sessions,
+            overlay: viewModel.overlayManager,
+            onDismiss: { [weak self] in self?.dismissPanel() },
+            onHeightChange: { [weak panel] height in
+                guard let panel, height > 0 else { return }
+                // Grow downwards: the top stays under the menu bar.
+                var frame = panel.frame
+                frame.origin.y = frame.maxY - height
+                frame.size.height = height
+                panel.setFrame(frame, display: true)
+            }
+        ))
+        hostingView.sizingOptions = []
+        hostingView.frame = contentRect
+        hostingView.autoresizingMask = [.width, .height]
+
+        // The same material as a system menu bar popover.
+        let background = NSVisualEffectView(frame: contentRect)
+        background.material = .popover
+        background.blendingMode = .behindWindow
+        background.state = .active
+        background.wantsLayer = true
+        background.layer?.cornerRadius = 12
+        background.layer?.cornerCurve = .continuous
+        background.layer?.masksToBounds = true
+        background.addSubview(hostingView)
+
+        panel.contentView = background
         panel.isFloatingPanel = true
         panel.level = .floating
         panel.hasShadow = true
-        panel.backgroundColor = NSColor(calibratedWhite: 0.09, alpha: 1.0)
+        panel.backgroundColor = .clear
         panel.isOpaque = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        panel.standardWindowButton(.closeButton)?.isHidden = true
-        panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
-        panel.standardWindowButton(.zoomButton)?.isHidden = true
         return panel
     }
 
@@ -259,7 +262,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         let buttonFrameInScreen = buttonWindow.convertToScreen(button.frame)
-        let originX = buttonFrameInScreen.midX - panel.frame.width / 2
+        var originX = buttonFrameInScreen.midX - panel.frame.width / 2
+        if let visible = buttonWindow.screen?.visibleFrame {
+            originX = min(max(originX, visible.minX + 8), visible.maxX - panel.frame.width - 8)
+        }
         let originY = buttonFrameInScreen.minY - panel.frame.height - 6
         panel.setFrameOrigin(NSPoint(x: originX, y: originY))
     }

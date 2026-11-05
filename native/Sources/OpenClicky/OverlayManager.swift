@@ -1,16 +1,9 @@
 //
 //  OverlayManager.swift
-//  Owns the per-display OverlayWindow pool and publishes the current
-//  POINT target so BlueCursorView instances can animate. Created once
-//  in OpenClickyViewModel.init and kept for the app lifetime.
-//
-//  Key behaviours:
-//    - Creates / destroys overlay windows as displays connect and
-//      disconnect (NSApplication.didChangeScreenParameters).
-//    - Only one target at a time — activeTarget is @Published so every
-//      BlueCursorView can observe changes reactively.
-//    - clearTargetIfMatches avoids race conditions when a second POINT
-//      lands while the previous cursor is still flying back.
+//  Owns OpenClicky's own cursor and the per-display overlay windows that
+//  draw it. The cursor never reads or follows the user's mouse. It waits at
+//  its home below the menu bar icon, shows listening and thinking where it
+//  stands, flies to whatever Claude points at, and later flies back home.
 //
 
 import AppKit
@@ -19,35 +12,104 @@ import Foundation
 import SwiftUI
 import os
 
+/// A place for the cursor to fly to, from a POINT tag or the session bridge.
+struct BlueCursorTarget: Equatable {
+    /// Global AppKit coordinate.
+    let globalLocation: CGPoint
+    /// AppKit frame of the destination display.
+    let displayFrame: CGRect
+    /// 1-3 word label shown under the cursor on arrival.
+    let label: String?
+}
+
+/// What the caption under the cursor shows.
+enum CursorCaption: Equatable {
+    case none
+    case listening(transcript: String)
+    case thinking
+    case text(String)
+
+    static func resolve(state: CompanionState, reply: String, label: String?, transcript: String) -> CursorCaption {
+        switch state {
+        case .listening:
+            return .listening(transcript: transcript)
+        case .thinking where reply.isEmpty:
+            return .thinking
+        default:
+            if !reply.isEmpty { return .text(reply) }
+            if let label, !label.isEmpty { return .text(label) }
+            return .none
+        }
+    }
+}
+
+/// The arc a flight follows, in AppKit coordinates (y grows upwards).
+enum CursorFlight {
+    static func duration(from a: CGPoint, to b: CGPoint) -> TimeInterval {
+        min(max(TimeInterval(hypot(b.x - a.x, b.y - a.y) / 800), 0.6), 1.4)
+    }
+
+    static func position(at rawT: Double, from start: CGPoint, to end: CGPoint) -> CGPoint {
+        let clamped = min(max(rawT, 0), 1)
+        let t = clamped * clamped * (3 - 2 * clamped)
+        let arc = min(hypot(end.x - start.x, end.y - start.y) * 0.2, 80)
+        let control = CGPoint(x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 + arc)
+        let u = 1 - t
+        return CGPoint(
+            x: u * u * start.x + 2 * u * t * control.x + t * t * end.x,
+            y: u * u * start.y + 2 * u * t * control.y + t * t * end.y
+        )
+    }
+}
+
 @MainActor
 final class OverlayManager: ObservableObject {
-    /// Current POINT target being visualised. Nil when no animation
-    /// in progress. Published so every BlueCursorView can observe and
-    /// decide whether to show/hide based on screenFrame match.
-    @Published private(set) var activeTarget: BlueCursorTarget?
+    /// Global AppKit coordinate of the cursor's tip.
+    @Published private(set) var cursorLocation: CGPoint = .zero
+    @Published private(set) var isCursorVisible = false
+    @Published private(set) var pointLabel: String?
 
-    /// Mirror of OpenClickyViewModel.state so each BlueCursorView can render
-    /// the right shape at the cursor (triangle / waveform / spinner).
-    /// Wired by OpenClickyViewModel via Combine to keep OverlayManager free
-    /// of a back-reference to the view model.
-    @Published var voiceState: CompanionState = .idle
-
-    /// Mirror of OpenClickyViewModel.currentAudioLevel for the listening
-    /// waveform. 0…1 normalised mic power.
+    @Published var voiceState: CompanionState = .idle { didSet { stateDidChange() } }
+    /// 0…1 normalised mic power.
     @Published var audioLevel: CGFloat = 0
+    @Published var partialTranscript = ""
+    /// The reply so far. The view model clears it a few seconds after a turn.
+    @Published var streamingResponseText = "" { didSet { stateDidChange() } }
+    /// During a lesson the cursor stays on the current step between turns.
+    @Published var isLessonActive = false { didSet { stateDidChange() } }
+    @Published var showsCursorAtRest: Bool {
+        didSet {
+            UserDefaults.standard.set(showsCursorAtRest, forKey: Self.showsAtRestKey)
+            stateDidChange()
+        }
+    }
 
-    /// Mirror of OpenClickyViewModel.streamingText (the POINT-stripped reply
-    /// text). Empty string means no bubble; otherwise each BlueCursorView
-    /// on the cursor's / target's display renders a floating bubble
-    /// beside the buddy. OpenClickyViewModel is responsible for clearing
-    /// this after the auto-hide window so stale replies don't linger.
-    @Published var streamingResponseText: String = ""
+    /// Where the cursor waits, set by the app once its menu bar icon exists.
+    var homeProvider: () -> CGPoint? = { nil } {
+        didSet { goHome(animated: false) }
+    }
+
+    var caption: CursorCaption {
+        CursorCaption.resolve(
+            state: voiceState,
+            reply: streamingResponseText,
+            label: pointLabel,
+            transcript: partialTranscript
+        )
+    }
+
+    /// How long the cursor lingers where it pointed before heading home.
+    private static let lingerSeconds: TimeInterval = 4
+    private static let showsAtRestKey = "com.proyecto26.openclicky.showsCursorAtRest"
 
     private let logger = Logger(subsystem: "com.proyecto26.openclicky", category: "OverlayManager")
     private var windows: [OverlayWindow] = []
     private var screenParameterObserver: NSObjectProtocol?
+    private var flightTask: Task<Void, Never>?
+    private var goHomeTask: Task<Void, Never>?
 
     init() {
+        showsCursorAtRest = UserDefaults.standard.object(forKey: Self.showsAtRestKey) as? Bool ?? true
         installScreenParameterObserver()
         rebuildWindowsForCurrentScreens()
     }
@@ -58,38 +120,93 @@ final class OverlayManager: ObservableObject {
         }
     }
 
-    /// Drive the blue cursor to `target`. Replaces any in-flight
-    /// animation. The BlueCursorView for the matching display picks
-    /// it up via Combine and starts the flight.
+    /// Flies the cursor to `target`, replacing any flight under way.
     func flyTo(_ target: BlueCursorTarget) {
-        let frames = windows.map { $0.frame }
-        logger.info("flyTo target=\(String(describing: target.globalLocation), privacy: .public) displayFrame=\(String(describing: target.displayFrame), privacy: .public) label=\(target.label ?? "nil", privacy: .public) windows=\(self.windows.count, privacy: .public) windowFrames=\(String(describing: frames), privacy: .public)")
-        ensureWindowsVisible()
-        activeTarget = target
+        logger.info("flyTo \(String(describing: target.globalLocation), privacy: .public) label=\(target.label ?? "nil", privacy: .public)")
+        goHomeTask?.cancel()
+        pointLabel = nil
+        isCursorVisible = true
+        fly(to: target.globalLocation) { [weak self] in
+            self?.pointLabel = target.label
+            self?.stateDidChange()
+        }
     }
 
-    /// Unconditionally drops the current POINT target + clears the
-    /// response bubble. Used by OpenClickyViewModel.cancelCurrentTurn so
-    /// an interrupted turn leaves zero residue on screen.
+    /// Drops the reply and label so an interrupted turn leaves no residue.
     func reset() {
-        activeTarget = nil
+        flightTask?.cancel()
+        pointLabel = nil
         streamingResponseText = ""
     }
 
-    /// Called by a BlueCursorView when it finishes its fly-back-to-
-    /// cursor animation. We only clear if the current activeTarget
-    /// is the one that just finished, so a newly-dispatched target
-    /// doesn't get overwritten.
-    func clearTargetIfMatches(target screenFrame: CGRect) {
-        guard let active = activeTarget,
-              active.displayFrame.origin == screenFrame.origin,
-              active.displayFrame.size == screenFrame.size else { return }
-        activeTarget = nil
-        // Leave windows on screen; they're transparent and cheap to
-        // keep mounted. They hide visually when opacity drops to 0.
+    /// The user clicked during a lesson: uncover what the click may open.
+    func clearLabel() {
+        pointLabel = nil
     }
 
-    // MARK: - Private
+    // MARK: - Resting
+
+    private func stateDidChange() {
+        goHomeTask?.cancel()
+        if voiceState != .idle {
+            isCursorVisible = true
+            return
+        }
+        guard !isLessonActive, streamingResponseText.isEmpty else { return }
+        goHomeTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(Self.lingerSeconds * 1_000_000_000))
+            guard let self, !Task.isCancelled else { return }
+            self.goHome(animated: true)
+        }
+    }
+
+    private func goHome(animated: Bool) {
+        pointLabel = nil
+        let home = homeProvider() ?? fallbackHome
+        let settle = { [weak self] in
+            guard let self else { return }
+            self.isCursorVisible = self.showsCursorAtRest || self.voiceState != .idle
+        }
+        if animated, isCursorVisible {
+            fly(to: home, completion: settle)
+        } else {
+            flightTask?.cancel()
+            cursorLocation = home
+            settle()
+        }
+    }
+
+    private var fallbackHome: CGPoint {
+        guard let frame = NSScreen.screens.first?.frame else { return .zero }
+        return CGPoint(x: frame.maxX - 160, y: frame.maxY - 48)
+    }
+
+    // MARK: - Flight
+
+    private func fly(to end: CGPoint, completion: @escaping () -> Void) {
+        flightTask?.cancel()
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+            cursorLocation = end
+            completion()
+            return
+        }
+        let start = cursorLocation
+        let duration = CursorFlight.duration(from: start, to: end)
+        flightTask = Task { @MainActor [weak self] in
+            let began = Date()
+            while !Task.isCancelled {
+                let rawT = Date().timeIntervalSince(began) / duration
+                self?.cursorLocation = CursorFlight.position(at: rawT, from: start, to: end)
+                if rawT >= 1 {
+                    completion()
+                    return
+                }
+                try? await Task.sleep(nanoseconds: 16_000_000)
+            }
+        }
+    }
+
+    // MARK: - Windows
 
     private func installScreenParameterObserver() {
         screenParameterObserver = NotificationCenter.default.addObserver(
@@ -98,7 +215,12 @@ final class OverlayManager: ObservableObject {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor in
-                self?.rebuildWindowsForCurrentScreens()
+                guard let self else { return }
+                self.rebuildWindowsForCurrentScreens()
+                // Its display may have gone, or the menu bar icon moved.
+                if self.voiceState == .idle, !self.isLessonActive {
+                    self.goHome(animated: false)
+                }
             }
         }
     }
@@ -111,19 +233,9 @@ final class OverlayManager: ObservableObject {
         windows = NSScreen.screens.map { screen in
             let view = BlueCursorView(screenFrame: screen.frame, manager: self)
             let window = OverlayWindow(screen: screen, rootView: AnyView(view))
-            // Order front immediately so the NSHostingView activates its
-            // SwiftUI subscriptions now — otherwise the first @Published
-            // activeTarget can arrive before .onReceive is wired up.
             window.orderFrontRegardless()
             return window
         }
-        let screenFrames = NSScreen.screens.map(\.frame)
-        logger.info("Rebuilt \(self.windows.count, privacy: .public) overlay window(s) for \(NSScreen.screens.count, privacy: .public) display(s); frames=\(String(describing: screenFrames), privacy: .public)")
-    }
-
-    private func ensureWindowsVisible() {
-        for window in windows where !window.isVisible {
-            window.orderFrontRegardless()
-        }
+        logger.info("Rebuilt \(self.windows.count, privacy: .public) overlay window(s)")
     }
 }

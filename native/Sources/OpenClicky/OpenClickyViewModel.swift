@@ -58,7 +58,7 @@ final class OpenClickyViewModel: ObservableObject {
     @Published var isRunningTurn: Bool = false
     @Published var streamingText: String = ""
     @Published var lastError: String?
-    @Published var lastSessionId: String?
+    let sessions: SessionStore
     @Published var selectedModel: ClaudeModel = ClaudeModel.loadPersisted() {
         didSet { selectedModel.persist() }
     }
@@ -108,7 +108,8 @@ final class OpenClickyViewModel: ObservableObject {
     private var tutorLookPending = false
     private var tutorAutomaticLooks = 0
 
-    init() {
+    init(sessions: SessionStore? = nil) {
+        self.sessions = sessions ?? SessionStore()
         self.hasScreenRecordingPermission = screenRecordingPermission.isGranted
         self.hasAccessibilityPermission = accessibilityPermission.isGranted
 
@@ -149,9 +150,16 @@ final class OpenClickyViewModel: ObservableObject {
             }
             .store(in: &observations)
 
-        // Mirror state + mic power into OverlayManager so the always-on
-        // cursor buddy can render the right visual (triangle / waveform
-        // / spinner) without OverlayManager depending on the view model.
+        // Mirror state into OverlayManager so the cursor can show it
+        // without OverlayManager depending on the view model.
+        dictationManager.$partialTranscript
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] text in self?.overlayManager.partialTranscript = text }
+            .store(in: &observations)
+        $isTutorMode
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] active in self?.overlayManager.isLessonActive = active }
+            .store(in: &observations)
         $state
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in self?.overlayManager.voiceState = state }
@@ -310,7 +318,10 @@ final class OpenClickyViewModel: ObservableObject {
 
         if enabled {
             tutorClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseUp) { [weak self] _ in
-                Task { @MainActor [weak self] in self?.scheduleTutorLook() }
+                Task { @MainActor [weak self] in
+                    self?.overlayManager.clearLabel()
+                    self?.scheduleTutorLook()
+                }
             }
         } else if let monitor = tutorClickMonitor {
             NSEvent.removeMonitor(monitor)
@@ -333,7 +344,7 @@ final class OpenClickyViewModel: ObservableObject {
             self.tutorAutomaticLooks += 1
             guard self.tutorAutomaticLooks <= TutorMode.maxAutomaticLooks else {
                 self.setTutorMode(false)
-                self.lastError = "Tutor mode stopped after \(TutorMode.maxAutomaticLooks) automatic looks. Speak to continue."
+                self.lastError = Strings.tutorLimitReached(TutorMode.maxAutomaticLooks)
                 return
             }
             self.runTurn(userPrompt: TutorMode.lookPrompt, thenSpeak: true)
@@ -409,7 +420,7 @@ final class OpenClickyViewModel: ObservableObject {
                 let manifest = try await ScreenCapture.captureAllDisplays()
                 let binary = try ClaudeCLIRunner.locate()
                 let runner = ClaudeCLIRunner(binaryURL: binary)
-                let resume = SessionPersistence.shared.load()
+                let resume = sessions.resumeIdForNextTurn()
 
                 // Build one ClaudeCLIMessage containing every display's
                 // JPEG + its labeled dimensions, so Claude can reason
@@ -441,10 +452,11 @@ final class OpenClickyViewModel: ObservableObject {
                     }
                 }
 
-                if let sessionId = result.sessionId {
-                    lastSessionId = sessionId
-                    SessionPersistence.shared.save(sessionId: sessionId)
-                }
+                sessions.recordTurn(
+                    claudeSessionId: result.sessionId,
+                    usage: result.usage,
+                    prompt: userPrompt == TutorMode.lookPrompt ? nil : userPrompt
+                )
 
                 guard self.turnGeneration == thisTurn, !Task.isCancelled else { return }
 
@@ -511,7 +523,12 @@ final class OpenClickyViewModel: ObservableObject {
                 }
             } catch let error as ClaudeCLIError {
                 if self.turnGeneration == thisTurn {
-                    lastError = error.description
+                    if error.description.contains("No conversation found") {
+                        sessions.forgetClaudeSession()
+                        lastError = Strings.sessionGone
+                    } else {
+                        lastError = error.description
+                    }
                     state = .idle
                 }
             } catch let error as ScreenCaptureError {
@@ -532,10 +549,12 @@ final class OpenClickyViewModel: ObservableObject {
         }
     }
 
-    /// Text-input entry point kept for debugging + users without a mic.
-    /// The name preserves the v0.1 "Test Claude" button wiring.
-    func runTestTurn(userPrompt: String) {
-        runTurn(userPrompt: userPrompt, thenSpeak: false)
+    /// A typed question, answered just like a spoken one.
+    func ask(_ question: String) {
+        tutorLookPending = false
+        tutorSettleTask?.cancel()
+        tutorAutomaticLooks = 0
+        runTurn(userPrompt: question, thenSpeak: true)
     }
 
     func cancelCurrentTurn() {
@@ -553,13 +572,6 @@ final class OpenClickyViewModel: ObservableObject {
         streamingText = ""
         lastError = nil
         state = .idle
-    }
-
-    func clearConversation() {
-        SessionPersistence.shared.clear()
-        lastSessionId = nil
-        streamingText = ""
-        lastError = nil
     }
 
     func openClaudeCodeInstallPage() {

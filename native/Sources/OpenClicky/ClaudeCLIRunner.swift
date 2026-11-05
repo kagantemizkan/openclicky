@@ -71,6 +71,7 @@ struct ClaudeCLIRunResult {
     let sessionId: String?
     let totalCostUSD: Double?
     let durationMs: Int?
+    var usage: TokenUsage? = nil
 }
 
 // MARK: - Runner
@@ -206,6 +207,7 @@ final class ClaudeCLIRunner {
         var sessionId: String? = nil
         var finalCostUSD: Double? = nil
         var finalDurationMs: Int? = nil
+        var usage: TokenUsage? = nil
 
         var replyComplete = false
         let startedAt = Date()
@@ -216,6 +218,7 @@ final class ClaudeCLIRunner {
             readLoop: for try await line in lineStream {
                 try Task.checkCancellation()
                 guard let event = parseJSON(line) else { continue }
+                if let latest = event.usage { usage = latest }
 
                 switch event.type {
                 case "system" where event.subtype == "init":
@@ -264,7 +267,8 @@ final class ClaudeCLIRunner {
                 text: accumulatedText,
                 sessionId: sessionId,
                 totalCostUSD: nil,
-                durationMs: nil
+                durationMs: nil,
+                usage: usage
             )
         }
 
@@ -286,7 +290,8 @@ final class ClaudeCLIRunner {
             text: accumulatedText,
             sessionId: sessionId,
             totalCostUSD: finalCostUSD,
-            durationMs: finalDurationMs
+            durationMs: finalDurationMs,
+            usage: usage
         )
     }
 
@@ -379,7 +384,8 @@ final class ClaudeCLIRunner {
             textDelta: extractTextDelta(from: obj),
             isMessageStop: (obj["event"] as? [String: Any])?["type"] as? String == "message_stop",
             totalCostUSD: obj["total_cost_usd"] as? Double,
-            durationMs: obj["duration_ms"] as? Int
+            durationMs: obj["duration_ms"] as? Int,
+            usage: TokenUsage(streamLine: obj)
         )
     }
 
@@ -434,6 +440,7 @@ private struct ParsedEvent {
     let isMessageStop: Bool
     let totalCostUSD: Double?
     let durationMs: Int?
+    let usage: TokenUsage?
 }
 
 private final class StderrCollector: @unchecked Sendable {

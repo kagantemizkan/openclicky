@@ -1,498 +1,311 @@
 //
 //  BlueCursorView.swift
-//  Blue macOS-style pointer that appears on a display only while
-//  Claude is pointing at something.
-//
-//  Behaviour:
-//    - Hidden at rest: nothing follows the mouse. The status indicators
-//      (waveform while listening, spinner while thinking, reply bubble)
-//      still sit beside the real pointer at a +35, +25 offset.
-//    - POINT flight: when OverlayManager publishes an activeTarget
-//      for this screen, the blue arrow fades in at the real pointer,
-//      flies along a quadratic Bézier arc so its tip lands on the
-//      target, and shows a label chip for at least 3 s and until the
-//      reply has been spoken, then fades out in place.
-//    - Per-screen exclusivity: only the display whose frame contains
-//      NSEvent.mouseLocation shows the buddy during follow mode; the
-//      target display takes over during POINT flight.
-//
-//  One view per overlay window (one per NSScreen). `screenFrame` is
-//  captured at construction and used to translate global AppKit
-//  coordinates (bottom-left origin) into SwiftUI view-local coords
-//  (top-left origin) without relying on GeometryReader.
+//  Draws OpenClicky's own cursor, and the caption under it, on one display.
+//  OverlayManager owns where it is; this view only renders it, and only on
+//  the display that contains it. The cursor itself shows what it's doing:
+//  it pulses with your voice while listening and rocks while thinking.
 //
 
 import AppKit
-import CoreImage
 import SwiftUI
-import os
 
-/// Published to the overlay by OverlayManager. Each BlueCursorView
-/// decides whether it's the right one for this target by comparing
-/// screenFrames.
-struct BlueCursorTarget: Equatable {
-    /// Global AppKit coordinate. Caller converts to view-local.
-    let globalLocation: CGPoint
-    /// AppKit frame of the destination display.
-    let displayFrame: CGRect
-    /// 1-3 word label shown in the chip on arrival.
-    let label: String?
+// MARK: - Brand
+
+enum Brand {
+    /// #A0DAFA, always with black text on top.
+    static let blue = Color(red: 160 / 255, green: 218 / 255, blue: 250 / 255)
+    static let nsBlue = NSColor(srgbRed: 160 / 255, green: 218 / 255, blue: 250 / 255, alpha: 1)
 }
 
-/// Behavioural mode of the buddy. Drives whether the cursor-follow
-/// timer controls position or the Bézier flight timer does.
-enum BuddyMode: Equatable {
-    case followingCursor
-    case navigatingToTarget
-    case pointingAtTarget
+// MARK: - Shape
+
+/// The cursor's silhouette: a soft arrowhead with its tip at the top left.
+/// Shared by the overlay, the menu bar icon and the app icon.
+enum CursorGeometry {
+    /// Height relative to the width of the arrow.
+    static let aspect: CGFloat = 1.12
+
+    /// The path in a rect with y growing downwards.
+    static func path(width: CGFloat, origin: CGPoint = .zero, flipped: Bool = false) -> CGPath {
+        let corners: [(CGFloat, CGFloat, CGFloat)] = [
+            (0, 0, 0.09),
+            (1, 0.56, 0.09),
+            (0.46, 0.68, 0.12),
+            (0.22, aspect, 0.09),
+        ]
+        let points = corners.map { corner -> CGPoint in
+            let y = corner.1 * width
+            return CGPoint(
+                x: origin.x + corner.0 * width,
+                y: flipped ? origin.y + aspect * width - y : origin.y + y
+            )
+        }
+        let path = CGMutablePath()
+        let last = points[points.count - 1]
+        path.move(to: CGPoint(x: (last.x + points[0].x) / 2, y: (last.y + points[0].y) / 2))
+        for index in points.indices {
+            let next = points[(index + 1) % points.count]
+            path.addArc(tangent1End: points[index], tangent2End: next, radius: corners[index].2 * width)
+        }
+        path.closeSubpath()
+        return path
+    }
 }
+
+/// The cursor itself, in colour. A hairline keeps its pale blue visible on a
+/// light menu bar as well as a dark one.
+enum StatusItemIcon {
+    static func make() -> NSImage {
+        let image = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { _ in
+            guard let context = NSGraphicsContext.current?.cgContext else { return false }
+            let width: CGFloat = 12
+            let path = CursorGeometry.path(
+                width: width,
+                origin: CGPoint(x: 3.5, y: (18 - width * CursorGeometry.aspect) / 2),
+                flipped: true
+            )
+            context.addPath(path)
+            context.setFillColor(Brand.nsBlue.cgColor)
+            context.fillPath()
+            context.addPath(path)
+            context.setStrokeColor(NSColor.black.withAlphaComponent(0.55).cgColor)
+            context.setLineWidth(0.75)
+            context.setLineJoin(.round)
+            context.strokePath()
+            return true
+        }
+        image.accessibilityDescription = "OpenClicky"
+        return image
+    }
+}
+
+private struct CursorShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        Path(CursorGeometry.path(width: rect.width, origin: rect.origin))
+    }
+}
+
+/// The arrow alone: blue fill, white edge, soft shadow.
+struct CursorArrow: View {
+    var width: CGFloat = 20
+
+    var body: some View {
+        ZStack {
+            CursorShape().stroke(Color.white, style: StrokeStyle(lineWidth: width * 0.22, lineJoin: .round))
+            CursorShape().fill(Brand.blue)
+        }
+        .frame(width: width, height: width * CursorGeometry.aspect)
+        .compositingGroup()
+        .shadow(color: .black.opacity(0.35), radius: width * 0.18, x: 0, y: width * 0.08)
+    }
+}
+
+// MARK: - Overlay
 
 struct BlueCursorView: View {
     let screenFrame: CGRect
     @ObservedObject var manager: OverlayManager
 
-    // Position is in SwiftUI view-local coords (top-left origin).
-    // In followingCursor mode it's driven by the 60 Hz tracking timer;
-    // in flight modes it's driven directly by the Bézier animation
-    // timer so we get a clean 60 fps arc without SwiftUI implicit
-    // animations stepping on the frame-by-frame updates.
-    @State private var cursorPosition: CGPoint
-    @State private var isCursorOnThisScreen: Bool
-    @State private var cursorOpacity: Double = 0
-    @State private var trackingTimer: Timer?
+    @State private var captionSize: CGSize = .zero
 
-    // Flight state (POINT animation).
-    @State private var mode: BuddyMode = .followingCursor
-    @State private var arrowOpacity: Double = 0
-    /// Bumped whenever a flight starts or aborts, so the delayed fade-out
-    /// of an older POINT can't cut a newer one short.
-    @State private var pointingGeneration = 0
-    @State private var chipText: String? = nil
-    @State private var chipOpacity: Double = 0
-    @State private var chipScale: CGFloat = 1
-    @State private var chipSize: CGSize = .zero
-    @State private var bubbleSize: CGSize = .zero
-    @State private var flightTimer: Timer?
-
-    private static let log = Logger(subsystem: "com.proyecto26.openclicky", category: "BlueCursorView")
-
-    /// Offset applied to the mouse location so the buddy sits beside
-    /// the cursor (lower-right) rather than directly on top of it.
-    private static let cursorFollowOffset = CGPoint(x: 35, y: 25)
-
-    init(screenFrame: CGRect, manager: OverlayManager) {
-        self.screenFrame = screenFrame
-        self.manager = manager
-
-        // Seed position from the live mouse so the buddy never flashes
-        // at (0,0) between init and the first timer tick.
-        let mouse = NSEvent.mouseLocation
-        let localX = mouse.x - screenFrame.origin.x
-        let localY = screenFrame.height - (mouse.y - screenFrame.origin.y)
-        _cursorPosition = State(initialValue: CGPoint(
-            x: localX + Self.cursorFollowOffset.x,
-            y: localY + Self.cursorFollowOffset.y
-        ))
-        _isCursorOnThisScreen = State(initialValue: screenFrame.contains(mouse))
-    }
+    private static let arrowWidth: CGFloat = 20
+    /// Puts the caption below the arrow and slightly to its right.
+    private static let captionGap = CGSize(width: 14, height: 27)
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            // Nearly-transparent backing so the window always has drawable
-            // content (belt-and-suspenders against NSHostingView shrinking
-            // to zero when the cursor is off-screen).
-            Color.black.opacity(0.001)
-
-            // Blue system arrow — only while flying to / parked at a
-            // POINT target. Offset by the hot spot so the arrow's tip,
-            // not the image centre, sits on cursorPosition.
-            Image(nsImage: BlueArrowCursor.image)
-                .opacity(mode == .followingCursor ? 0 : arrowOpacity)
-                .position(
-                    x: cursorPosition.x + BlueArrowCursor.image.size.width / 2 - BlueArrowCursor.hotSpot.x,
-                    y: cursorPosition.y + BlueArrowCursor.image.size.height / 2 - BlueArrowCursor.hotSpot.y
-                )
-
-            // Waveform — shown only while the user is holding the
-            // push-to-talk shortcut (voiceState == .listening).
-            // Mounted only while shown: its TimelineView would otherwise
-            // keep redrawing at 36 Hz with opacity 0.
-            if buddyVisibleOnThisScreen && manager.voiceState == .listening {
-                BlueCursorWaveformView(audioLevel: manager.audioLevel)
-                    .opacity(cursorOpacity)
-                    .position(cursorPosition)
-                    .animation(.spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0), value: cursorPosition)
-            }
-
-            // Spinner — shown while Claude is thinking (screenshot +
-            // CLI roundtrip). Mounted only while shown, as above.
-            if buddyVisibleOnThisScreen && manager.voiceState == .thinking {
-                BlueCursorSpinnerView()
-                    .opacity(cursorOpacity)
-                    .position(cursorPosition)
-                    .animation(.spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0), value: cursorPosition)
-            }
-
-            // Streaming response bubble — follows the buddy. Visible
-            // whenever Claude has produced any reply text AND we're not
-            // actively listening (waveform owns the cursor during
-            // push-to-talk). OpenClickyViewModel auto-clears the text ~6 s
-            // after the turn finishes so stale replies don't linger.
-            if buddyVisibleOnThisScreen
-                && manager.voiceState != .listening
-                && !manager.streamingResponseText.isEmpty {
-                let origin = OverlayPlacement.boxOrigin(
-                    anchor: cursorPosition,
-                    size: bubbleSize,
-                    screen: screenFrame.size,
-                    gap: CGSize(width: 28, height: 20)
-                )
-                responseBubble(manager.streamingResponseText)
-                    .onGeometryChange(for: CGSize.self, of: \.size) { bubbleSize = $0 }
-                    .offset(x: origin.x, y: origin.y)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
-            }
-
-            // Label chip — only visible while the buddy is parked at a
-            // POINT target. Fades/scales in, holds, then fades out.
-            if mode == .pointingAtTarget, let chipText {
-                labelChip(chipText)
-                    .onGeometryChange(for: CGSize.self, of: \.size) { chipSize = $0 }
-                    .scaleEffect(chipScale)
-                    .opacity(chipOpacity)
-                    .position(OverlayPlacement.chipCenter(
-                        preferred: CGPoint(x: cursorPosition.x + 10 + 40, y: cursorPosition.y - 16),
-                        size: chipSize,
-                        screen: screenFrame.size
-                    ))
-                    .animation(.spring(response: 0.4, dampingFraction: 0.6), value: chipScale)
-                    .animation(.easeOut(duration: 0.3), value: chipOpacity)
+            if manager.isCursorVisible, screenFrame.contains(manager.cursorLocation) {
+                let tip = viewPoint(manager.cursorLocation)
+                arrow(tip: tip)
+                caption(tip: tip)
             }
         }
         .frame(width: screenFrame.width, height: screenFrame.height, alignment: .topLeading)
         .allowsHitTesting(false)
-        .onAppear {
-            Self.log.info("onAppear screenFrame=\(String(describing: self.screenFrame), privacy: .public)")
-            startTrackingCursor()
-            withAnimation(.easeIn(duration: 1.5)) {
-                cursorOpacity = 1
-            }
-        }
-        .onDisappear {
-            trackingTimer?.invalidate()
-            trackingTimer = nil
-            flightTimer?.invalidate()
-            flightTimer = nil
-        }
-        .onReceive(manager.$activeTarget) { target in
-            handleTargetChange(target)
-        }
+        .animation(.easeOut(duration: 0.2), value: manager.isCursorVisible)
     }
 
-    // MARK: - Visibility
-
-    /// True when this screen should render the buddy right now.
-    /// - During cursor follow: only the screen containing the mouse,
-    ///   AND only if no other screen is busy with a POINT flight
-    ///   (prevents two buddies on screen at once).
-    /// - During flight / pointing: always show (this view is the one
-    ///   that owns the target).
-    private var buddyVisibleOnThisScreen: Bool {
-        switch mode {
-        case .followingCursor:
-            if let target = manager.activeTarget,
-               !matchesThisScreen(target.displayFrame) {
-                return false
-            }
-            return isCursorOnThisScreen
-        case .navigatingToTarget, .pointingAtTarget:
-            return true
-        }
-    }
-
-    // MARK: - Cursor tracking
-
-    private func startTrackingCursor() {
-        trackingTimer?.invalidate()
-        trackingTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { _ in
-            let mouse = NSEvent.mouseLocation
-            isCursorOnThisScreen = screenFrame.contains(mouse)
-
-            // Flight timer owns the position while we're navigating or
-            // pointing; don't stomp on it.
-            guard mode == .followingCursor else { return }
-
-            let local = convertGlobalToView(mouse)
-            cursorPosition = CGPoint(
-                x: local.x + Self.cursorFollowOffset.x,
-                y: local.y + Self.cursorFollowOffset.y
+    private func arrow(tip: CGPoint) -> some View {
+        LivelyCursor(state: manager.voiceState, audioLevel: manager.audioLevel, width: Self.arrowWidth)
+            .position(
+                x: tip.x + Self.arrowWidth / 2,
+                y: tip.y + Self.arrowWidth * CursorGeometry.aspect / 2
             )
-        }
+            .transition(.opacity)
     }
 
-    // MARK: - POINT flight
-
-    private func handleTargetChange(_ target: BlueCursorTarget?) {
-        guard let target else {
-            Self.log.info("handleTargetChange: nil (clear) on screenFrame=\(String(describing: self.screenFrame), privacy: .public)")
-            abortPointing()
-            return
-        }
-        let matches = matchesThisScreen(target.displayFrame)
-        Self.log.info("handleTargetChange: target.displayFrame=\(String(describing: target.displayFrame), privacy: .public) screenFrame=\(String(describing: self.screenFrame), privacy: .public) matches=\(matches, privacy: .public)")
-        guard matches else {
-            // The new target belongs to another display: never leave a
-            // second arrow parked here.
-            abortPointing()
-            return
-        }
-
-        // Start from the real pointer so the arrow appears to peel off it.
-        let startView = convertGlobalToView(NSEvent.mouseLocation)
-        let endView = convertGlobalToView(target.globalLocation)
-
-        pointingGeneration += 1
-        let generation = pointingGeneration
-        cursorPosition = startView
-        mode = .navigatingToTarget
-        chipText = nil
-        chipOpacity = 0
-        chipScale = 0.5
-        withAnimation(.easeIn(duration: 0.15)) {
-            arrowOpacity = 1
-        }
-
-        animateBezier(from: startView, to: endView, duration: flightDuration(from: startView, to: endView)) {
-            enterPointingAt(target, generation: generation)
-        }
-    }
-
-    private func enterPointingAt(_ target: BlueCursorTarget, generation: Int) {
-        mode = .pointingAtTarget
-        chipText = target.label ?? "here"
-        chipScale = 1
-        chipOpacity = 1
-
-        fadeOutWhenDone(generation: generation, after: 3.0)
-    }
-
-    /// Holds for at least `delay` and for as long as the reply is being
-    /// spoken, then fades out in place.
-    private func fadeOutWhenDone(generation: Int, after delay: TimeInterval) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-            guard generation == pointingGeneration, mode == .pointingAtTarget else { return }
-            if manager.voiceState == .speaking {
-                fadeOutWhenDone(generation: generation, after: 0.25)
-                return
-            }
-            chipOpacity = 0
-            withAnimation(.easeOut(duration: 0.3)) {
-                arrowOpacity = 0
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                guard generation == pointingGeneration, mode == .pointingAtTarget else { return }
-                mode = .followingCursor
-                manager.clearTargetIfMatches(target: screenFrame)
-            }
-        }
-    }
-
-    /// Drops any flight or parked arrow on this display immediately.
-    private func abortPointing() {
-        guard mode != .followingCursor else { return }
-        pointingGeneration += 1
-        flightTimer?.invalidate()
-        flightTimer = nil
-        arrowOpacity = 0
-        chipText = nil
-        chipOpacity = 0
-        mode = .followingCursor
-    }
-
-    private func animateBezier(
-        from start: CGPoint,
-        to end: CGPoint,
-        duration: TimeInterval,
-        onComplete: @escaping () -> Void
-    ) {
-        flightTimer?.invalidate()
-
-        let distance = hypot(end.x - start.x, end.y - start.y)
-        let midpoint = CGPoint(x: (start.x + end.x) / 2, y: (start.y + end.y) / 2)
-        let arcHeight = min(distance * 0.2, 80)
-        let control = CGPoint(x: midpoint.x, y: midpoint.y - arcHeight)
-
-        let startDate = Date()
-        flightTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { timer in
-            let rawT = min(1.0, Date().timeIntervalSince(startDate) / duration)
-            let t = smoothstep(rawT)
-
-            cursorPosition = quadraticBezier(t: t, start: start, control: control, end: end)
-
-            if rawT >= 1.0 {
-                timer.invalidate()
-                flightTimer = nil
-                cursorPosition = end
-                onComplete()
-            }
-        }
-    }
-
-    // MARK: - Subviews
-
-    /// Floating streaming-response bubble. Rendered inside the existing
-    /// per-display overlay window (no extra NSPanel needed) so it shares
-    /// the buddy's cursor-tracking timer + window frame.
-    private func responseBubble(_ text: String) -> some View {
-        Text(text)
-            .font(.system(size: 13))
-            .foregroundColor(.white)
-            .lineSpacing(3)
-            .fixedSize(horizontal: false, vertical: true)
-            .frame(maxWidth: 300, alignment: .leading)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(Color.black.opacity(0.85))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .stroke(Color.white.opacity(0.15), lineWidth: 0.8)
-                    )
-                    .shadow(color: Color.black.opacity(0.35), radius: 16, y: 8)
+    @ViewBuilder
+    private func caption(tip: CGPoint) -> some View {
+        let content = manager.caption
+        if content != .none {
+            let origin = OverlayPlacement.boxOrigin(
+                anchor: tip,
+                size: captionSize,
+                screen: screenFrame.size,
+                gap: Self.captionGap
             )
+            CursorCaptionView(content: content, audioLevel: manager.audioLevel)
+                .onGeometryChange(for: CGSize.self, of: \.size) { captionSize = $0 }
+                .offset(x: origin.x, y: origin.y)
+                .transition(.opacity)
+        }
     }
 
-    private func labelChip(_ text: String) -> some View {
-        Text(text)
-            .font(.system(size: 12, weight: .semibold))
-            .foregroundColor(.white)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .background(
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(Color.blue.opacity(0.92))
-                    .shadow(color: .blue.opacity(0.45), radius: 8, y: 2)
+    /// AppKit global (bottom-left origin) to view-local (top-left origin).
+    private func viewPoint(_ global: CGPoint) -> CGPoint {
+        CGPoint(
+            x: global.x - screenFrame.origin.x,
+            y: screenFrame.height - (global.y - screenFrame.origin.y)
+        )
+    }
+}
+
+// MARK: - State on the cursor
+
+/// Pulses with the voice while listening, rocks on its tip while thinking,
+/// and breathes while speaking. Still when idle, and for Reduce Motion.
+private struct LivelyCursor: View {
+    let state: CompanionState
+    let audioLevel: CGFloat
+    let width: CGFloat
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        if state == .idle || reduceMotion {
+            CursorArrow(width: width)
+        } else {
+            TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
+                let time = context.date.timeIntervalSinceReferenceDate
+                CursorArrow(width: width)
+                    .scaleEffect(scale(at: time), anchor: .topLeading)
+                    .rotationEffect(.degrees(tilt(at: time)), anchor: .topLeading)
+            }
+        }
+    }
+
+    private func scale(at time: TimeInterval) -> CGFloat {
+        switch state {
+        case .listening:
+            let level = pow(min(max(audioLevel - 0.008, 0) * 2.85, 1), 0.76)
+            return 1.05 + level * 0.35
+        case .speaking:
+            return 1 + CGFloat(sin(time * 3)) * 0.05
+        case .thinking, .idle:
+            return 1
+        }
+    }
+
+    private func tilt(at time: TimeInterval) -> Double {
+        state == .thinking ? sin(time * 5) * 10 : 0
+    }
+}
+
+// MARK: - Caption
+
+private struct CursorCaptionView: View {
+    let content: CursorCaption
+    let audioLevel: CGFloat
+
+    var body: some View {
+        Group {
+            switch content {
+            case .none:
+                EmptyView()
+            case .listening(let transcript):
+                HStack(spacing: 8) {
+                    VoiceBars(audioLevel: audioLevel)
+                    captionText(transcript.isEmpty ? Strings.listening : transcript)
+                }
+            case .thinking:
+                HStack(spacing: 2) {
+                    captionText(Strings.thinking)
+                    ThinkingDots()
+                }
+            case .text(let text):
+                captionText(text)
+            }
+        }
+        .padding(.horizontal, 11)
+        .padding(.vertical, 7)
+        .background(
+            UnevenRoundedRectangle(
+                topLeadingRadius: 3,
+                bottomLeadingRadius: 10,
+                bottomTrailingRadius: 10,
+                topTrailingRadius: 10,
+                style: .continuous
             )
-            .fixedSize()
-    }
-
-    // MARK: - Math helpers
-
-    private func matchesThisScreen(_ frame: CGRect) -> Bool {
-        frame.origin == screenFrame.origin && frame.size == screenFrame.size
-    }
-
-    private func flightDuration(from a: CGPoint, to b: CGPoint) -> TimeInterval {
-        let d = hypot(b.x - a.x, b.y - a.y)
-        return min(max(TimeInterval(d / 800), 0.6), 1.4)
-    }
-
-    private func smoothstep(_ t: Double) -> Double {
-        t * t * (3 - 2 * t)
-    }
-
-    private func quadraticBezier(t: Double, start: CGPoint, control: CGPoint, end: CGPoint) -> CGPoint {
-        let u = 1 - t
-        return CGPoint(
-            x: u*u*start.x + 2*u*t*control.x + t*t*end.x,
-            y: u*u*start.y + 2*u*t*control.y + t*t*end.y
+            .fill(Brand.blue)
+            .shadow(color: .black.opacity(0.28), radius: 8, y: 3)
         )
     }
 
-    /// AppKit global (bottom-left origin) → SwiftUI view-local (top-left).
-    private func convertGlobalToView(_ globalPoint: CGPoint) -> CGPoint {
-        let localX = globalPoint.x - screenFrame.origin.x
-        let localY = screenFrame.height - (globalPoint.y - screenFrame.origin.y)
-        return CGPoint(x: localX, y: localY)
+    private func captionText(_ text: String) -> some View {
+        WrapAtWidth(maxWidth: 278) {
+            Text(text)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.black)
+                .lineSpacing(2)
+        }
     }
 }
 
-// MARK: - Blue system arrow
+/// Lets text wrap at `maxWidth` while the box still hugs a short line, which
+/// `frame(maxWidth:)` can't do: it either fills the width or never wraps.
+private struct WrapAtWidth: Layout {
+    let maxWidth: CGFloat
 
-/// The real macOS arrow cursor recoloured blue: black fill → blue, white
-/// outline stays white. Using `NSCursor.arrow` keeps the shape identical
-/// to the system pointer instead of approximating it with a hand-drawn path.
-enum BlueArrowCursor {
-    static let hotSpot = NSCursor.arrow.hotSpot
-    static let image = makeImage()
+    private func proposal(_ proposed: ProposedViewSize) -> ProposedViewSize {
+        ProposedViewSize(width: min(proposed.width ?? maxWidth, maxWidth), height: nil)
+    }
 
-    private static func makeImage() -> NSImage {
-        let source = NSCursor.arrow.image
-        guard let cgImage = source.cgImage(forProposedRect: nil, context: nil, hints: nil),
-              let filter = CIFilter(name: "CIFalseColor") else {
-            return source
-        }
-        filter.setValue(CIImage(cgImage: cgImage), forKey: kCIInputImageKey)
-        filter.setValue(CIColor(red: 0, green: 0.48, blue: 1), forKey: "inputColor0")
-        filter.setValue(CIColor(red: 1, green: 1, blue: 1), forKey: "inputColor1")
-        guard let output = filter.outputImage,
-              let tinted = CIContext().createCGImage(output, from: output.extent) else {
-            return source
-        }
-        return NSImage(cgImage: tinted, size: source.size)
+    func sizeThatFits(proposal proposed: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        subviews.first?.sizeThatFits(proposal(proposed)) ?? .zero
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal proposed: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        subviews.first?.place(at: bounds.origin, proposal: proposal(proposed))
     }
 }
 
-// MARK: - Waveform (listening)
-
-/// Five-bar waveform that reacts to mic power while push-to-talk is
-/// held. Combines an idle sine pulse with a reactive component so it
-/// looks alive even during silence.
-private struct BlueCursorWaveformView: View {
+private struct VoiceBars: View {
     let audioLevel: CGFloat
 
-    private let barCount = 5
-    private let barProfile: [CGFloat] = [0.4, 0.7, 1.0, 0.7, 0.4]
+    private let profile: [CGFloat] = [0.5, 0.8, 1, 0.8, 0.5]
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 36.0)) { context in
-            HStack(alignment: .center, spacing: 2) {
-                ForEach(0..<barCount, id: \.self) { i in
-                    RoundedRectangle(cornerRadius: 1.5, style: .continuous)
-                        .fill(Color.blue)
-                        .frame(width: 2, height: barHeight(for: i, at: context.date))
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
+            HStack(spacing: 2) {
+                ForEach(profile.indices, id: \.self) { index in
+                    Capsule()
+                        .fill(Color.black)
+                        .frame(width: 2.5, height: height(index, at: context.date))
                 }
             }
-            .shadow(color: .blue.opacity(0.6), radius: 6)
-            .animation(.linear(duration: 0.08), value: audioLevel)
+            .frame(height: 16)
         }
     }
 
-    private func barHeight(for i: Int, at date: Date) -> CGFloat {
-        let phase = CGFloat(date.timeIntervalSinceReferenceDate * 3.6) + CGFloat(i) * 0.35
-        let normalized = max(audioLevel - 0.008, 0)
-        let eased = pow(min(normalized * 2.85, 1), 0.76)
-        let reactive = eased * 10 * barProfile[i]
-        let idlePulse = (sin(phase) + 1) / 2 * 1.5
-        return 3 + reactive + idlePulse
+    private func height(_ index: Int, at date: Date) -> CGFloat {
+        let phase = date.timeIntervalSinceReferenceDate * 3.6 + Double(index) * 0.5
+        let level = pow(min(max(audioLevel - 0.008, 0) * 2.85, 1), 0.76)
+        return 4 + level * 12 * profile[index] + CGFloat((sin(phase) + 1) / 2) * 1.5
     }
 }
 
-// MARK: - Spinner (thinking)
-
-/// Circular "thinking" spinner that replaces the triangle while the
-/// screenshot + Claude roundtrip is in flight.
-private struct BlueCursorSpinnerView: View {
-    @State private var spinning = false
-
+private struct ThinkingDots: View {
     var body: some View {
-        Circle()
-            .trim(from: 0.15, to: 0.85)
-            .stroke(
-                AngularGradient(
-                    colors: [Color.blue.opacity(0), Color.blue],
-                    center: .center
-                ),
-                style: StrokeStyle(lineWidth: 2.5, lineCap: .round)
-            )
-            .frame(width: 14, height: 14)
-            .rotationEffect(.degrees(spinning ? 360 : 0))
-            .shadow(color: .blue.opacity(0.6), radius: 6)
-            .onAppear {
-                withAnimation(.linear(duration: 0.8).repeatForever(autoreverses: false)) {
-                    spinning = true
+        TimelineView(.periodic(from: .now, by: 0.35)) { context in
+            let step = Int(context.date.timeIntervalSinceReferenceDate / 0.35) % 3
+            HStack(spacing: 2) {
+                ForEach(0..<3, id: \.self) { index in
+                    Circle()
+                        .fill(Color.black.opacity(index == step ? 0.9 : 0.3))
+                        .frame(width: 3.5, height: 3.5)
                 }
             }
+        }
+        .padding(.top, 5)
     }
 }
