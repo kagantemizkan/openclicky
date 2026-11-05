@@ -170,4 +170,4 @@ jobs:
           DMG="${{ needs.build.outputs.dmg_name }}"
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
             gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "OpenClicky $VERSION" --notes "Automated release. See docs/plan/ for change audit."
-          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber "native/$DMG" "native/$DMG.sha256"
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber "$DMG" "$DMG.sha256"
