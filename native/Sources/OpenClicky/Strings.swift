@@ -166,13 +166,14 @@ enum Strings {
     static let speakReplies = pick("Yanıtları sesli oku", "Read replies aloud")
     static let speakRepliesDetail = pick("Kapalıyken yanıt yalnızca imlecin altında görünür", "When off, replies only appear under the cursor")
     static let connectionMissing = pick("Claude Code'da tanımlı değil", "Not set up in Claude Code")
+    static let connectionCanEdit = pick("Sormadan değişiklik yapabilsin", "Can make changes without asking")
     static let connectionsFooter = pick(
-        "Bağlantılar yalnızca okuyabilir, belgelerini değiştiremez. Her biri yalnızca o uygulama öndeyken ya da onun dersi sürerken açılır; bağlıyken yanıtlar biraz gecikir ve daha çok token harcar.",
-        "Connections can only read and can't change your documents. Each opens only while its app is in front or being taught; while connected, replies take a little longer and use more tokens."
+        "Değişiklik izni açıkken Claude sen istediğinde onay sormadan belgeni değiştirebilir; Blender'da kod çalıştırabilir, bu kod Mac'indeki dosyalara da erişebilir. Tıklama sonrası otomatik bakışlar yalnızca okur. Her bağlantı yalnızca o uygulama öndeyken ya da onun dersi sürerken açılır; bağlıyken yanıtlar gecikir ve daha çok token harcar.",
+        "With changes on, Claude can change your document without asking when you request it, and can run code in Blender, which can also reach files on your Mac. Automatic looks after a click only read. Each connection opens only while its app is in front or being taught; while connected, replies take longer and use more tokens."
     )
 
-    static func readOnlyTools(_ count: Int) -> String {
-        isTurkish ? "Salt okunur · \(count) araç" : "Read-only · \(count) tools"
+    static func connectionTools(_ count: Int) -> String {
+        isTurkish ? "\(count) araç" : "\(count) tools"
     }
 
     // Voice settings

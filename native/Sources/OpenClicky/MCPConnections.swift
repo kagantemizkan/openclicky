@@ -1,14 +1,16 @@
 //
 //  MCPConnections.swift
-//  Read-only links to apps' MCP servers, using the definitions already in
-//  Claude Code's ~/.claude.json.
+//  Links to apps' MCP servers, using the definitions already in Claude Code's
+//  ~/.claude.json.
 //
-//  Claude sees the user's screen on every turn, and text on screen could try
-//  to instruct it, so nothing here may change a document. Only the listed
-//  read tools are allowed; a tool not listed, including one a future server
-//  version adds, is refused by the CLI. Tools known to write are also removed
-//  from what Claude is offered, which saves tokens: Figma's full list alone
-//  costs about 41k.
+//  Only listed tools are allowed; a tool not listed, including one a future
+//  server version adds, is refused by the CLI. Tools that change things run
+//  without asking, as the user chose, on turns the user started. Automatic
+//  looks after a click stay read-only, because the screen starts those and
+//  text on screen could try to instruct Claude.
+//
+//  Other known tools aren't even offered, which saves tokens (Figma's full
+//  list costs about 41k), or send data elsewhere (report_sdk_issue).
 //
 
 import AppKit
@@ -21,6 +23,9 @@ struct MCPConnection: Identifiable, Equatable {
     let displayName: String
     let bundleId: String
     let readTools: [String]
+    /// Change documents, the app's view, or files. Allowed only when editing.
+    let writeTools: [String]
+    /// Never offered.
     let hiddenTools: [String]
 
     func toolNames(_ tools: [String]) -> [String] {
@@ -51,13 +56,16 @@ extension MCPConnection {
             "get_python_api_docs", "get_screenshot_of_area_as_image", "get_screenshot_of_window_as_image",
             "search_api_docs", "search_manual_docs",
         ],
+        writeTools: [
+            "execute_blender_code", "jump_to_tab_by_name", "jump_to_tab_by_space_type",
+            "jump_to_view3d_object_by_name", "jump_to_view3d_object_data_by_name",
+            "render_thumbnail_to_path", "render_viewport_to_path",
+        ],
         hiddenTools: [
-            "execute_blender_code", "execute_blender_code_for_cli",
-            "get_blendfile_summary_datablocks_for_cli", "get_blendfile_summary_missing_files_for_cli",
-            "get_blendfile_summary_of_linked_libraries_for_cli", "get_blendfile_summary_path_info_for_cli",
-            "get_blendfile_summary_usage_guess_for_cli", "get_screenshot_of_window_as_json",
-            "jump_to_tab_by_name", "jump_to_tab_by_space_type", "jump_to_view3d_object_by_name",
-            "jump_to_view3d_object_data_by_name", "render_thumbnail_to_path", "render_viewport_to_path",
+            "execute_blender_code_for_cli", "get_blendfile_summary_datablocks_for_cli",
+            "get_blendfile_summary_missing_files_for_cli", "get_blendfile_summary_of_linked_libraries_for_cli",
+            "get_blendfile_summary_path_info_for_cli", "get_blendfile_summary_usage_guess_for_cli",
+            "get_screenshot_of_window_as_json",
         ]
     )
 
@@ -69,7 +77,8 @@ extension MCPConnection {
             "list_library_scripts", "list_sdk_documentation", "read_library_script",
             "read_sdk_documentation_topic", "render_selection", "render_spread", "search_sdk_hints",
         ],
-        hiddenTools: ["add_sdk_hint", "execute_script", "report_sdk_issue", "save_script_to_library"]
+        writeTools: ["add_sdk_hint", "execute_script", "save_script_to_library"],
+        hiddenTools: ["report_sdk_issue"]
     )
 
     static let figma = MCPConnection(
@@ -80,13 +89,14 @@ extension MCPConnection {
             "create_session", "get_design_context", "get_figjam", "get_libraries", "get_metadata",
             "get_motion_context", "get_screenshot", "get_variable_defs", "search_design_system", "whoami",
         ],
+        writeTools: ["create_new_file", "generate_diagram", "generate_figma_design", "upload_assets", "use_figma"],
         hiddenTools: [
-            "add_code_connect_map", "create_generative_plugin", "create_new_file", "create_shader",
-            "download_assets", "export_video", "generate_diagram", "generate_figma_design", "generate_image",
+            "add_code_connect_map", "create_generative_plugin", "create_shader",
+            "download_assets", "export_video", "generate_image",
             "get_code_connect_map", "get_code_connect_suggestions", "get_context_for_code_connect",
             "get_generative_plugin", "get_shader", "list_file_shaders", "list_generative_plugins", "list_shaders",
             "send_code_connect_mappings", "send_code_to_figma", "update_generative_plugin", "update_shader",
-            "upload_assets", "use_figma", "weave_cancel_tool_run", "weave_find_model",
+            "weave_cancel_tool_run", "weave_find_model",
             "weave_get_model_run_output", "weave_get_tool_inputs", "weave_get_tool_run_output",
             "weave_list_tools", "weave_run_model", "weave_run_tool", "weave_upload_asset",
         ]
@@ -140,10 +150,32 @@ enum MCPConnections {
         Set((loadClaudeSettings()["mcpServers"] as? [String: Any] ?? [:]).keys)
     }
 
+    /// Which tools may run and which aren't offered, for one turn.
+    static func toolLists(
+        for connections: [MCPConnection],
+        canEdit: (MCPConnection) -> Bool
+    ) -> (allowed: [String], hidden: [String]) {
+        var allowed: [String] = []
+        var hidden: [String] = []
+        for connection in connections {
+            allowed += connection.toolNames(connection.readTools)
+            hidden += connection.toolNames(connection.hiddenTools)
+            if canEdit(connection) {
+                allowed += connection.toolNames(connection.writeTools)
+            } else {
+                hidden += connection.toolNames(connection.writeTools)
+            }
+        }
+        return (allowed, hidden)
+    }
+
     /// Prepares a config for `connections`, or nil if none can be reached. It
     /// goes in a private file rather than the command line, where any process
     /// could read a server's headers or environment.
-    static func turnConfig(for connections: [MCPConnection]) -> (config: MCPTurnConfig, connected: [MCPConnection])? {
+    static func turnConfig(
+        for connections: [MCPConnection],
+        canEdit: (MCPConnection) -> Bool
+    ) -> (config: MCPTurnConfig, connected: [MCPConnection])? {
         guard !connections.isEmpty else { return nil }
         let definitions = serverDefinitions(for: connections, claudeSettings: loadClaudeSettings())
         let connected = connections.filter { definitions[$0.id] != nil }
@@ -161,12 +193,9 @@ enum MCPConnections {
             logger.error("Couldn't write the MCP config: \(error.localizedDescription, privacy: .public)")
             return nil
         }
+        let tools = toolLists(for: connected, canEdit: canEdit)
         return (
-            MCPTurnConfig(
-                configPath: file.path,
-                allowedTools: connected.flatMap { $0.toolNames($0.readTools) },
-                hiddenTools: connected.flatMap { $0.toolNames($0.hiddenTools) }
-            ),
+            MCPTurnConfig(configPath: file.path, allowedTools: tools.allowed, hiddenTools: tools.hidden),
             connected
         )
     }

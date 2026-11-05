@@ -530,11 +530,19 @@ final class OpenClickyViewModel: ObservableObject {
                     images: contentImages
                 )
 
-                let attached = MCPConnections.turnConfig(for: MCPConnections.connections(
-                    enabled: preferences.enabledConnections,
-                    frontmostBundleId: frontmost,
-                    lessonConnection: lessonChoice?.connection
-                ))
+                // Automatic looks stay read-only: the screen starts those, not the user.
+                let isUserTurn = userPrompt != TutorMode.lookPrompt
+                let canEdit: (MCPConnection) -> Bool = { [preferences] connection in
+                    isUserTurn && !preferences.readOnlyConnections.contains(connection.id)
+                }
+                let attached = MCPConnections.turnConfig(
+                    for: MCPConnections.connections(
+                        enabled: preferences.enabledConnections,
+                        frontmostBundleId: frontmost,
+                        lessonConnection: lessonChoice?.connection
+                    ),
+                    canEdit: canEdit
+                )
 
                 let result = try await runner.ask(
                     messages: [message],
@@ -542,7 +550,8 @@ final class OpenClickyViewModel: ObservableObject {
                         base: Self.systemPrompt + preferences.replyLength.promptNote,
                         active: isTutorMode,
                         lessonApp: lessonChoice?.appName,
-                        connectedApps: attached?.connected.map(\.displayName) ?? []
+                        connectedApps: attached?.connected.map(\.displayName) ?? [],
+                        editableApps: attached?.connected.filter(canEdit).map(\.displayName) ?? []
                     ),
                     model: selectedModel.rawValue,
                     resumeSessionId: resume,

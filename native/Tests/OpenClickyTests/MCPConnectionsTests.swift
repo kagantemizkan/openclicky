@@ -8,7 +8,23 @@ import XCTest
 @testable import OpenClicky
 
 final class MCPConnectionsTests: XCTestCase {
-    func testNoToolThatCanWriteIsAllowed() {
+    func testAutomaticLooksCantEditButUserTurnsCan() {
+        let reading = MCPConnections.toolLists(for: [.blender], canEdit: { _ in false })
+        XCTAssertFalse(reading.allowed.contains("mcp__blender__execute_blender_code"))
+        XCTAssertTrue(reading.hidden.contains("mcp__blender__execute_blender_code"))
+
+        let editing = MCPConnections.toolLists(for: [.blender], canEdit: { _ in true })
+        XCTAssertTrue(editing.allowed.contains("mcp__blender__execute_blender_code"))
+        XCTAssertFalse(editing.hidden.contains("mcp__blender__execute_blender_code"))
+    }
+
+    func testToolThatSendsDataOutIsNeverAllowed() {
+        let lists = MCPConnections.toolLists(for: [.affinity], canEdit: { _ in true })
+        XCTAssertFalse(lists.allowed.contains("mcp__affinity__report_sdk_issue"))
+        XCTAssertTrue(lists.hidden.contains("mcp__affinity__report_sdk_issue"))
+    }
+
+    func testReadListHoldsNoToolThatCanWrite() {
         let writeWords = ["execute", "save", "add_", "report", "use_figma", "generate", "upload", "update",
                           "send", "weave", "jump", "_to_path", "create_new", "create_shader", "create_generative"]
         for connection in MCPConnection.all {
@@ -18,6 +34,8 @@ final class MCPConnectionsTests: XCTestCase {
                 }
             }
             XCTAssertTrue(Set(connection.readTools).isDisjoint(with: connection.hiddenTools), connection.id)
+            XCTAssertTrue(Set(connection.readTools).isDisjoint(with: connection.writeTools), connection.id)
+            XCTAssertTrue(Set(connection.writeTools).isDisjoint(with: connection.hiddenTools), connection.id)
         }
     }
 
@@ -84,36 +102,42 @@ final class MCPConnectionsTests: XCTestCase {
     }
 
     /// Real servers through the real CLI. Uses the Claude plan, so it runs
-    /// only when asked for. Prints speed and token cost, and asks Claude to
-    /// use a tool that writes, which must not be available.
+    /// only when asked for. Prints speed and token cost. Runs a harmless
+    /// script that changes nothing, with and without editing allowed.
     func testLiveConnections() async throws {
         try XCTSkipIf(ProcessInfo.processInfo.environment["OPENCLICKY_LIVE_MCP"] == nil, "set OPENCLICKY_LIVE_MCP to run")
         let runner = ClaudeCLIRunner(binaryURL: try ClaudeCLIRunner.locate())
-        let cases: [(MCPConnection, String)] = [
-            (.blender, "Use search_manual_docs to look up 'vignette', then answer in one short sentence. Then try execute_blender_code with 'print(1)'. Finally list every tool name you have access to."),
-            (.affinity, "Use list_sdk_documentation, then answer in one short sentence. Then try execute_script with '1+1'. Finally list every tool name you have access to."),
-            (.figma, "Use whoami, then answer in one short sentence. Then list every tool name you have access to."),
+        let cases: [(MCPConnection, Bool, String)] = [
+            (.affinity, true, "Read the 'preamble' SDK documentation, then run execute_script with the script '1+1'. Tell me in one short sentence whether it ran and what came back."),
+            (.affinity, false, "Run execute_script with the script '1+1'. Tell me in one short sentence whether it ran."),
+            (.blender, true, "Run execute_blender_code with the code 'print(1)'. Tell me in one short sentence whether it ran and what came back."),
+            (.figma, true, "Use whoami, then answer in one short sentence."),
         ]
-        for (connection, prompt) in cases {
-            let attached = try XCTUnwrap(MCPConnections.turnConfig(for: [connection]))
+        for (connection, canEdit, prompt) in cases {
+            let attached = try XCTUnwrap(MCPConnections.turnConfig(for: [connection], canEdit: { _ in canEdit }))
             let began = Date()
             let firstWord = LiveClock()
             let tools = LiveClock()
             let result = try await runner.ask(
                 messages: [ClaudeCLIMessage(role: .user, text: prompt)],
-                systemPrompt: TutorMode.systemPrompt(base: "be brief", active: false, connectedApps: [connection.displayName]),
+                systemPrompt: TutorMode.systemPrompt(
+                    base: "be brief",
+                    active: false,
+                    connectedApps: [connection.displayName],
+                    editableApps: canEdit ? [connection.displayName] : []
+                ),
                 model: ClaudeModel.sonnet.rawValue,
                 mcp: attached.config
             ) { chunk in
                 if !chunk.accumulatedText.isEmpty { firstWord.mark(began) }
                 if let tool = chunk.activeTool { tools.note(tool) }
             }
-            print("LIVE \(connection.id) firstWord=\(firstWord.seconds ?? -1)s total=\(Date().timeIntervalSince(began))s")
+            print("LIVE \(connection.id) canEdit=\(canEdit) firstWord=\(firstWord.seconds ?? -1)s total=\(Date().timeIntervalSince(began))s")
             print("LIVE \(connection.id) usage=\(String(describing: result.usage)) context=\(String(describing: result.contextTokens))")
             print("LIVE \(connection.id) tools=\(tools.notes)")
             print("LIVE \(connection.id) reply=\(result.text)")
-            let hidden = Set(connection.toolNames(connection.hiddenTools))
-            XCTAssertTrue(hidden.isDisjoint(with: tools.notes), "Claude was offered a tool that writes")
+            let hidden = Set(MCPConnections.toolLists(for: [connection], canEdit: { _ in canEdit }).hidden)
+            XCTAssertTrue(hidden.isDisjoint(with: tools.notes), "Claude used a tool it wasn't offered")
         }
     }
 

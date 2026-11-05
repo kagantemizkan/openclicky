@@ -30,7 +30,7 @@ enum SettingsWindow {
             preferences: preferences
         ))
         add(Strings.tabAppearance, icon: "paintpalette", height: 340, AppearanceSettings(preferences: preferences))
-        add(Strings.tabConnections, icon: "link", height: 320, ConnectionsSettings(preferences: preferences))
+        add(Strings.tabConnections, icon: "link", height: 420, ConnectionsSettings(preferences: preferences))
         add(Strings.tabVoice, icon: "speaker.wave.2", height: 570, VoiceSettings(
             viewModel: viewModel,
             speech: viewModel.textToSpeech,
@@ -150,6 +150,20 @@ struct ConnectionsSettings: View {
             Section {
                 ForEach(MCPConnection.all) { connection in
                     row(connection)
+                    if definedServers.contains(connection.id), preferences.enabledConnections.contains(connection.id) {
+                        Toggle(Strings.connectionCanEdit, isOn: Binding(
+                            get: { !preferences.readOnlyConnections.contains(connection.id) },
+                            set: { canEdit in
+                                if canEdit {
+                                    preferences.readOnlyConnections.remove(connection.id)
+                                } else {
+                                    preferences.readOnlyConnections.insert(connection.id)
+                                }
+                            }
+                        ))
+                        .padding(.leading, 34)
+                        .controlSize(.small)
+                    }
                 }
             } footer: {
                 Text(Strings.connectionsFooter)
@@ -172,7 +186,7 @@ struct ConnectionsSettings: View {
                 appIcon(connection)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(verbatim: connection.displayName)
-                    Text(isDefined ? Strings.readOnlyTools(connection.readTools.count) : Strings.connectionMissing)
+                    Text(isDefined ? Strings.connectionTools(connection.readTools.count + connection.writeTools.count) : Strings.connectionMissing)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

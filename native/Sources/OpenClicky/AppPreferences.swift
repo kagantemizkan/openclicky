@@ -142,6 +142,11 @@ final class AppPreferences: ObservableObject {
         didSet { defaults.set(Array(enabledConnections), forKey: Key.connections) }
     }
 
+    /// Connections the user limited to reading. Editing is on by default.
+    @Published var readOnlyConnections: Set<String> {
+        didSet { defaults.set(Array(readOnlyConnections), forKey: Key.readOnlyConnections) }
+    }
+
     @Published private(set) var voiceOrder: [VoiceEngine] {
         didSet { defaults.set(voiceOrder.map(\.rawValue), forKey: Key.voiceOrder) }
     }
@@ -169,6 +174,7 @@ final class AppPreferences: ObservableObject {
     }
 
     private enum Key {
+        static let readOnlyConnections = "com.proyecto26.openclicky.readOnlyConnections"
         static let voiceOrder = "com.proyecto26.openclicky.voiceOrder"
         static let disabledVoices = "com.proyecto26.openclicky.disabledVoices"
         static let color = "com.proyecto26.openclicky.cursorColor"
@@ -188,6 +194,7 @@ final class AppPreferences: ObservableObject {
         captionSize = defaults.string(forKey: Key.caption).flatMap(CaptionSize.init) ?? .medium
         replyLength = defaults.string(forKey: Key.length).flatMap(ReplyLength.init) ?? .short
         speaksReplies = defaults.object(forKey: Key.speaks) as? Bool ?? true
+        readOnlyConnections = Set(defaults.stringArray(forKey: Key.readOnlyConnections) ?? [])
         voiceOrder = VoiceEngine.order(saved: defaults.stringArray(forKey: Key.voiceOrder))
         disabledVoices = Set((defaults.stringArray(forKey: Key.disabledVoices) ?? []).compactMap(VoiceEngine.init))
         enabledConnections = defaults.stringArray(forKey: Key.connections).map(Set.init)
