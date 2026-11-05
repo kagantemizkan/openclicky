@@ -29,7 +29,7 @@ enum SettingsWindow {
             overlay: viewModel.overlayManager,
             preferences: preferences
         ))
-        add(Strings.tabAppearance, icon: "paintpalette", height: 340, AppearanceSettings(preferences: preferences))
+        add(Strings.tabAppearance, icon: "paintpalette", height: 640, AppearanceSettings(preferences: preferences))
         add(Strings.tabConnections, icon: "link", height: 420, ConnectionsSettings(preferences: preferences))
         add(Strings.tabVoice, icon: "speaker.wave.2", height: 570, VoiceSettings(
             viewModel: viewModel,
@@ -77,63 +77,184 @@ struct AppearanceSettings: View {
     @ObservedObject var preferences: AppPreferences
 
     var body: some View {
+        VStack(spacing: 0) {
+            // Stays in view while the settings below scroll.
+            AppearancePreview(preferences: preferences)
+                .padding(.horizontal, 20)
+                .padding(.top, 8)
+            Divider()
+            form
+        }
+    }
+
+    private var form: some View {
         Form {
-            Section {
-                HStack(alignment: .top, spacing: 14) {
-                    CursorArrow(width: preferences.cursorSize.arrowWidth, color: preferences.cursorColor)
-                    CursorCaptionView(
-                        content: .text(Strings.previewCaption),
-                        audioLevel: 0,
-                        color: preferences.cursorColor,
-                        textSize: preferences.captionSize.points
-                    )
-                    .padding(.top, preferences.cursorSize.arrowWidth)
-                    Spacer(minLength: 0)
-                }
-                .frame(maxWidth: .infinity, minHeight: 90, alignment: .topLeading)
-                .padding(.vertical, 6)
-            }
-            Section {
-                LabeledContent(Strings.color) {
-                    HStack(spacing: 10) {
-                        ForEach(CursorColor.allCases) { color in
-                            ColorSwatch(color: color, isSelected: preferences.cursorColor == color) {
-                                preferences.cursorColor = color
-                            }
-                        }
-                    }
-                }
+            Section(Strings.appearanceCursor) {
+                ColorRow(title: Strings.color, selection: Binding(
+                    get: { preferences.cursorColor },
+                    set: { preferences.cursorColor = $0 ?? .blue }
+                ))
                 Picker(Strings.cursorSize, selection: $preferences.cursorSize) {
                     ForEach(CursorSize.allCases) { Text($0.displayName).tag($0) }
                 }
                 .pickerStyle(.segmented)
+            }
+            Section(Strings.appearanceCaption) {
+                ColorRow(
+                    title: Strings.captionBackground,
+                    selection: $preferences.captionColor,
+                    followName: Strings.followCursor,
+                    followColor: preferences.cursorColor
+                )
+                ColorRow(
+                    title: Strings.captionText,
+                    selection: $preferences.captionTextColor,
+                    followName: Strings.autoColor,
+                    followColor: preferences.captionStyle.background.usesDarkText
+                        ? ThemeColor(red: 0, green: 0, blue: 0)
+                        : ThemeColor(red: 255, green: 255, blue: 255)
+                )
                 Picker(Strings.captionSize, selection: $preferences.captionSize) {
                     ForEach(CaptionSize.allCases) { Text($0.displayName).tag($0) }
                 }
                 .pickerStyle(.segmented)
+                Picker(Strings.captionFont, selection: $preferences.captionFont) {
+                    ForEach(CaptionFont.allCases) { Text($0.displayName).tag($0) }
+                }
+                Slider(value: $preferences.captionOpacity, in: 0.5...1) {
+                    Text(Strings.captionOpacity)
+                }
+                Slider(value: $preferences.captionCornerRadius, in: 0...20) {
+                    Text(Strings.captionCorners)
+                }
+            }
+            Section(Strings.appearanceDrawing) {
+                ColorRow(
+                    title: Strings.color,
+                    selection: $preferences.drawingColor,
+                    followName: Strings.followCursor,
+                    followColor: preferences.cursorColor
+                )
+                Slider(value: $preferences.drawingLineWidth, in: 1...10) {
+                    Text(Strings.lineWidth)
+                }
+                Picker(Strings.lineStyle, selection: $preferences.drawingLine) {
+                    ForEach(LineStyle.allCases) { Text($0.displayName).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                Picker(Strings.drawingLook, selection: $preferences.drawingLook) {
+                    ForEach(DrawingLook.allCases) { Text($0.displayName).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                Toggle(Strings.drawingEdge, isOn: $preferences.drawingHasEdge)
+            }
+            Section {
+                HStack {
+                    Spacer()
+                    Button(Strings.resetAppearance, action: preferences.resetAppearance)
+                }
             }
         }
         .formStyle(.grouped)
     }
 }
 
+/// The cursor, chat box and a drawing, as they look with these settings.
+struct AppearancePreview: View {
+    @ObservedObject var preferences: AppPreferences
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 14) {
+            CursorArrow(width: preferences.cursorSize.arrowWidth, color: preferences.cursorColor)
+            CursorCaptionView(
+                content: .text(Strings.previewCaption),
+                audioLevel: 0,
+                style: preferences.captionStyle
+            )
+            .padding(.top, preferences.cursorSize.arrowWidth)
+            Spacer(minLength: 0)
+            ZStack {
+                AnnotationStroke(path: AnnotationGeometry.path(
+                    for: .circle(center: CGPoint(x: 34, y: 34), radius: 24),
+                    look: preferences.drawingLook,
+                    toView: { $0 }
+                ), style: preferences.drawingStyle)
+                AnnotationStroke(path: AnnotationGeometry.path(
+                    for: .arrow(from: CGPoint(x: 66, y: 66), to: CGPoint(x: 122, y: 18)),
+                    look: preferences.drawingLook,
+                    toView: { $0 }
+                ), style: preferences.drawingStyle)
+            }
+            .frame(width: 130, height: 76)
+        }
+        .frame(maxWidth: .infinity, minHeight: 90, alignment: .topLeading)
+        .padding(.vertical, 6)
+    }
+}
+
+/// The preset colours, an optional "follow" choice, and the system picker
+/// for any other colour.
+private struct ColorRow: View {
+    let title: String
+    @Binding var selection: ThemeColor?
+    /// When set, nil is a choice, shown with this name and colour.
+    var followName: String?
+    var followColor: ThemeColor = .blue
+
+    var body: some View {
+        LabeledContent(title) {
+            HStack(spacing: 5) {
+                if let followName {
+                    ColorSwatch(
+                        color: followColor,
+                        name: followName,
+                        isSelected: selection == nil,
+                        isFollow: true
+                    ) { selection = nil }
+                }
+                ForEach(ThemeColor.allCases) { color in
+                    ColorSwatch(
+                        color: color,
+                        name: color.displayName,
+                        isSelected: selection == color
+                    ) { selection = color }
+                }
+                ColorPicker(title, selection: Binding(
+                    get: { (selection ?? followColor).color },
+                    set: { selection = ThemeColor(NSColor($0)) }
+                ), supportsOpacity: false)
+                .labelsHidden()
+            }
+        }
+    }
+}
+
 private struct ColorSwatch: View {
-    let color: CursorColor
+    let color: ThemeColor
+    let name: String
     let isSelected: Bool
+    var isFollow = false
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
             Circle()
                 .fill(color.color)
-                .frame(width: 20, height: 20)
+                .frame(width: 18, height: 18)
                 .overlay(Circle().strokeBorder(.primary.opacity(0.15)))
+                .overlay {
+                    if isFollow {
+                        Image(systemName: "link")
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundStyle(color.textColor)
+                    }
+                }
                 .padding(3)
                 .overlay(Circle().strokeBorder(Color.accentColor, lineWidth: isSelected ? 2 : 0))
         }
         .buttonStyle(.plain)
-        .help(color.displayName)
-        .accessibilityLabel(color.displayName)
+        .help(name)
+        .accessibilityLabel(name)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }

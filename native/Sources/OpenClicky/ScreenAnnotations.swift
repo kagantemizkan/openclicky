@@ -132,16 +132,24 @@ extension PointCoordinateMapper {
 
 enum AnnotationGeometry {
     /// `toView` converts global AppKit coordinates to the view's.
-    static func path(for shape: ScreenAnnotation.Shape, toView: (CGPoint) -> CGPoint) -> Path {
+    static func path(
+        for shape: ScreenAnnotation.Shape,
+        look: DrawingLook = .handDrawn,
+        toView: (CGPoint) -> CGPoint
+    ) -> Path {
         switch shape {
         case .circle(let center, let radius):
-            return circle(center: toView(center), radius: radius)
+            let middle = toView(center)
+            if look == .clean {
+                return Path(ellipseIn: CGRect(x: middle.x - radius, y: middle.y - radius, width: radius * 2, height: radius * 2))
+            }
+            return circle(center: middle, radius: radius)
         case .arrow(let from, let to):
-            return arrow(from: toView(from), to: toView(to))
+            return arrow(from: toView(from), to: toView(to), bends: look == .handDrawn)
         case .box(let rect):
             let a = toView(CGPoint(x: rect.minX, y: rect.maxY))
             let box = CGRect(x: a.x, y: a.y, width: rect.width, height: rect.height).insetBy(dx: -4, dy: -4)
-            return Path(roundedRect: box, cornerRadius: 8, style: .continuous)
+            return Path(roundedRect: box, cornerRadius: look == .clean ? 3 : 8, style: .continuous)
         }
     }
 
@@ -164,10 +172,10 @@ enum AnnotationGeometry {
     }
 
     /// A gently bent shaft, then the head, so it draws in the natural order.
-    private static func arrow(from: CGPoint, to: CGPoint) -> Path {
+    private static func arrow(from: CGPoint, to: CGPoint, bends: Bool) -> Path {
         let dx = to.x - from.x, dy = to.y - from.y
         let length = max(hypot(dx, dy), 1)
-        let bend = min(length * 0.12, 26)
+        let bend = bends ? min(length * 0.12, 26) : 0
         let control = CGPoint(x: (from.x + to.x) / 2 + dy / length * bend, y: (from.y + to.y) / 2 - dx / length * bend)
         var path = Path()
         path.move(to: from)
@@ -188,14 +196,14 @@ enum AnnotationGeometry {
 struct ScreenAnnotationsLayer: View {
     let annotations: [ScreenAnnotation]
     let screenFrame: CGRect
-    let color: CursorColor
+    let style: DrawingStyle
 
     var body: some View {
         ZStack(alignment: .topLeading) {
             ForEach(annotations.filter { $0.isOn(screenFrame) }) { annotation in
                 AnnotationStroke(
-                    path: AnnotationGeometry.path(for: annotation.shape, toView: toView),
-                    color: color
+                    path: AnnotationGeometry.path(for: annotation.shape, look: style.look, toView: toView),
+                    style: style
                 )
             }
         }
@@ -210,21 +218,32 @@ struct ScreenAnnotationsLayer: View {
     }
 }
 
-/// Draws itself in. A white edge and shadow keep the colour readable on any
+/// Draws itself in. The white edge and shadow keep the colour readable on any
 /// background, the same way the cursor's do.
-private struct AnnotationStroke: View {
+struct AnnotationStroke: View {
     let path: Path
-    let color: CursorColor
+    let style: DrawingStyle
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var progress: CGFloat = 0
 
+    private func stroke(width: CGFloat) -> StrokeStyle {
+        StrokeStyle(
+            lineWidth: width,
+            lineCap: .round,
+            lineJoin: .round,
+            dash: style.line.dash(lineWidth: style.lineWidth)
+        )
+    }
+
     var body: some View {
         ZStack {
+            if style.hasEdge {
+                path.trim(from: 0, to: progress)
+                    .stroke(Color.white, style: stroke(width: style.lineWidth + 2.5))
+            }
             path.trim(from: 0, to: progress)
-                .stroke(Color.white, style: StrokeStyle(lineWidth: 5.5, lineCap: .round, lineJoin: .round))
-            path.trim(from: 0, to: progress)
-                .stroke(color.color, style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
+                .stroke(style.color.color, style: stroke(width: style.lineWidth))
         }
         .compositingGroup()
         .shadow(color: .black.opacity(0.4), radius: 3, y: 1)

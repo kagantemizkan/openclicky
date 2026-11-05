@@ -97,8 +97,8 @@ final class MCPConnectionsTests: XCTestCase {
     }
 
     func testCaptionTextPicksReadableColour() {
-        XCTAssertTrue(CursorColor.blue.usesDarkText)
-        XCTAssertFalse(CursorColor.slate.usesDarkText)
+        XCTAssertTrue(ThemeColor.blue.usesDarkText)
+        XCTAssertFalse(ThemeColor.slate.usesDarkText)
     }
 
     /// Real servers through the real CLI. Uses the Claude plan, so it runs

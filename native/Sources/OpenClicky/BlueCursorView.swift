@@ -47,7 +47,7 @@ enum CursorGeometry {
 /// The cursor itself, in colour. A hairline keeps its pale blue visible on a
 /// light menu bar as well as a dark one.
 enum StatusItemIcon {
-    static func make(color: CursorColor) -> NSImage {
+    static func make(color: ThemeColor) -> NSImage {
         let image = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { _ in
             guard let context = NSGraphicsContext.current?.cgContext else { return false }
             let width: CGFloat = 12
@@ -80,7 +80,7 @@ private struct CursorShape: Shape {
 /// The arrow alone: coloured fill, white edge, soft shadow.
 struct CursorArrow: View {
     var width: CGFloat = 20
-    var color: CursorColor = .blue
+    var color: ThemeColor = .blue
 
     var body: some View {
         ZStack {
@@ -113,7 +113,7 @@ struct BlueCursorView: View {
             ScreenAnnotationsLayer(
                 annotations: manager.annotations,
                 screenFrame: screenFrame,
-                color: preferences.cursorColor
+                style: preferences.drawingStyle
             )
             if manager.isCursorVisible, screenFrame.contains(manager.cursorLocation) {
                 let tip = viewPoint(manager.cursorLocation)
@@ -153,8 +153,7 @@ struct BlueCursorView: View {
             CursorCaptionView(
                 content: content,
                 audioLevel: manager.audioLevel,
-                color: preferences.cursorColor,
-                textSize: preferences.captionSize.points
+                style: preferences.captionStyle
             )
                 .onGeometryChange(for: CGSize.self, of: \.size) { captionSize = $0 }
                 .overlay(alignment: .topTrailing) {
@@ -200,7 +199,7 @@ private struct LivelyCursor: View {
     let state: CompanionState
     let audioLevel: CGFloat
     let width: CGFloat
-    let color: CursorColor
+    let color: ThemeColor
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -255,8 +254,7 @@ private struct CaptionCloseButton: View {
 struct CursorCaptionView: View {
     let content: CursorCaption
     let audioLevel: CGFloat
-    let color: CursorColor
-    let textSize: CGFloat
+    let style: CaptionStyle
 
     var body: some View {
         Group {
@@ -265,13 +263,13 @@ struct CursorCaptionView: View {
                 EmptyView()
             case .listening(let transcript):
                 HStack(spacing: 8) {
-                    VoiceBars(audioLevel: audioLevel, color: color.textColor)
+                    VoiceBars(audioLevel: audioLevel, color: style.textColor)
                     captionText(transcript.isEmpty ? Strings.listening : transcript)
                 }
             case .thinking(let detail):
                 HStack(spacing: 2) {
                     captionText(detail ?? Strings.thinking)
-                    ThinkingDots(color: color.textColor)
+                    ThinkingDots(color: style.textColor)
                 }
             case .text(let text):
                 captionText(text)
@@ -281,13 +279,13 @@ struct CursorCaptionView: View {
         .padding(.vertical, 7)
         .background(
             UnevenRoundedRectangle(
-                topLeadingRadius: 3,
-                bottomLeadingRadius: 10,
-                bottomTrailingRadius: 10,
-                topTrailingRadius: 10,
+                topLeadingRadius: min(3, style.cornerRadius),
+                bottomLeadingRadius: style.cornerRadius,
+                bottomTrailingRadius: style.cornerRadius,
+                topTrailingRadius: style.cornerRadius,
                 style: .continuous
             )
-            .fill(color.color)
+            .fill(style.background.color.opacity(style.opacity))
             .shadow(color: .black.opacity(0.28), radius: 8, y: 3)
         )
     }
@@ -295,8 +293,8 @@ struct CursorCaptionView: View {
     private func captionText(_ text: String) -> some View {
         WrapAtWidth(maxWidth: 278) {
             Text(text)
-                .font(.system(size: textSize, weight: .medium))
-                .foregroundStyle(color.textColor)
+                .font(.system(size: style.textSize, weight: .medium, design: style.font.design))
+                .foregroundStyle(style.textColor)
                 .lineSpacing(2)
         }
     }

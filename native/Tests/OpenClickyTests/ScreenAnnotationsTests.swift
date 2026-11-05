@@ -135,7 +135,7 @@ final class ScreenAnnotationsTests: XCTestCase {
                 ScreenAnnotationsLayer(
                     annotations: PointCoordinateMapper.annotations(from: parsed.tags, manifest: manifest),
                     screenFrame: frame,
-                    color: .blue
+                    style: DrawingStyle()
                 )
             }
             let host = NSHostingView(rootView: view)
@@ -153,5 +153,75 @@ final class ScreenAnnotationsTests: XCTestCase {
                 .write(to: URL(fileURLWithPath: "\(output)/draw-\(index + 1)-\(screen).png"))
             window.orderOut(nil)
         }
+    }
+
+    func testColorsSurviveSavingAndOlderSettingsStillLoad() {
+        XCTAssertEqual(ThemeColor(hex: "#112233")?.hex, "#112233")
+        XCTAssertEqual(ThemeColor(stored: "pink"), .pink)
+        XCTAssertEqual(ThemeColor(stored: "#D64896"), .pink)
+        XCTAssertNil(ThemeColor(hex: "nope"))
+        XCTAssertEqual(ThemeColor(ThemeColor.orange.nsColor), .orange)
+    }
+
+    @MainActor
+    func testAppearanceIsSavedFollowsTheCursorAndResets() {
+        let defaults = UserDefaults(suiteName: "openclicky-look-\(UUID().uuidString)")!
+        let first = AppPreferences(defaults: defaults)
+        first.cursorColor = .pink
+        XCTAssertEqual(first.captionStyle.background, .pink)
+        XCTAssertEqual(first.drawingStyle.color, .pink)
+
+        first.drawingColor = .green
+        first.drawingLineWidth = 7
+        first.drawingLine = .dotted
+        first.drawingLook = .clean
+        first.captionColor = .slate
+        first.captionOpacity = 0.7
+        first.captionFont = .mono
+
+        let again = AppPreferences(defaults: defaults)
+        XCTAssertEqual(again.drawingStyle, DrawingStyle(color: .green, lineWidth: 7, line: .dotted, look: .clean, hasEdge: true))
+        XCTAssertEqual(again.captionStyle.background, .slate)
+        XCTAssertEqual(again.captionStyle.opacity, 0.7)
+        XCTAssertEqual(again.captionStyle.font, .mono)
+
+        again.resetAppearance()
+        XCTAssertEqual(again.drawingStyle, DrawingStyle())
+        XCTAssertEqual(again.captionStyle, CaptionStyle())
+    }
+
+    @MainActor
+    func testRenderCustomLooks() throws {
+        let output = ProcessInfo.processInfo.environment["OPENCLICKY_PREVIEW_DIR"] ?? ""
+        try XCTSkipIf(output.isEmpty, "set OPENCLICKY_PREVIEW_DIR to run")
+        let defaults = UserDefaults(suiteName: "openclicky-render-\(UUID().uuidString)")!
+        let preferences = AppPreferences(defaults: defaults)
+        func save(_ name: String) throws {
+            let host = NSHostingView(rootView: AppearanceSettings(preferences: preferences).frame(width: 480, height: 900))
+            host.frame = CGRect(x: 0, y: 0, width: 480, height: 900)
+            let window = NSWindow(contentRect: host.frame, styleMask: .borderless, backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.contentView = host
+            window.setFrameOrigin(CGPoint(x: -4000, y: -4000))
+            window.orderFrontRegardless()
+            RunLoop.current.run(until: Date().addingTimeInterval(0.9))
+            let rep = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+            host.cacheDisplay(in: host.bounds, to: rep)
+            try rep.representation(using: .png, properties: [:])?
+                .write(to: URL(fileURLWithPath: "\(output)/look-\(name).png"))
+            window.orderOut(nil)
+        }
+        try save("default")
+        preferences.cursorColor = ThemeColor(hex: "#7A3CFF")!
+        preferences.captionColor = ThemeColor(hex: "#101820")!
+        preferences.captionTextColor = ThemeColor(hex: "#F2C14E")!
+        preferences.captionCornerRadius = 0
+        preferences.captionFont = .mono
+        preferences.drawingColor = ThemeColor(hex: "#FF3B30")!
+        preferences.drawingLineWidth = 6
+        preferences.drawingLine = .dashed
+        preferences.drawingLook = .clean
+        preferences.drawingHasEdge = false
+        try save("custom")
     }
 }
