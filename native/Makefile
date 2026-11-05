@@ -33,7 +33,7 @@
 APP_NAME    := OpenClicky
 EXEC        := openclicky
 BUNDLE_ID   := com.kagantemizkan.openclicky
-VERSION     := 0.1.0
+VERSION     := 0.1.1
 ARCH        := arm64
 
 BUILD_DIR   := .build/release
