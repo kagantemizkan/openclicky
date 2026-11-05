@@ -87,8 +87,8 @@ final class OpenClickyViewModel: ObservableObject {
     let accessibilityPermission = AccessibilityPermission()
     private var controlRounds = 0
     private var controlWatchdog: Task<Void, Never>?
-    private var controlIsPosting = false
-    private var controlMouseAnchor: CGPoint = .zero
+    /// The app a request is being carried out in, whatever the user does meanwhile.
+    private var controlApp: pid_t?
     let textToSpeech = TextToSpeech()
     let overlayManager = OverlayManager()
 
@@ -504,7 +504,10 @@ final class OpenClickyViewModel: ObservableObject {
         overlayManager.show([])
         if userPrompt != TutorMode.lookPrompt { lessonAwaitsGoal = false }
         let isContinuation = userPrompt.hasPrefix(ComputerControl.continuePrefix)
-        if !isContinuation { controlRounds = 0 }
+        if !isContinuation {
+            controlRounds = 0
+            controlApp = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        }
         // Only a person's request can move the mouse: never an automatic look,
         // and never while a lesson has the user doing the clicking.
         let canControl = preferences.controlEnabled
@@ -704,20 +707,23 @@ final class OpenClickyViewModel: ObservableObject {
         }
     }
 
-    // MARK: - Mouse and keyboard
+    // MARK: - Claude's own cursor
 
     /// Runs one reply's actions. True when another round follows with a fresh
     /// screenshot, so the chain and its stop-watching stay on.
     private func carryOut(_ actions: [ControlAction], manifest: CaptureManifest, turn: Int) async -> Bool {
         state = .thinking
-        controlIsPosting = true
         watchControl()
         let executor = ControlExecutor(
             poster: SystemControlPoster(),
             inspector: SystemControlInspector(),
             allowsBrowsers: preferences.controlInBrowsers,
-            onStep: { [weak self] point, display in
-                self?.overlayManager.flyTo(BlueCursorTarget(globalLocation: point, displayFrame: display, label: nil))
+            onStep: { [weak self] point, dragEnd, display in
+                guard let overlay = self?.overlayManager else { return }
+                overlay.flyTo(BlueCursorTarget(globalLocation: point, displayFrame: display, label: nil))
+                let mark: ScreenAnnotation.Shape = dragEnd.map { .arrow(from: point, to: $0) }
+                    ?? .circle(center: point, radius: 14)
+                overlay.show([ScreenAnnotation(shape: mark)])
             },
             approve: { [weak self] question in
                 await self?.askControlApproval(question) ?? false
@@ -726,16 +732,12 @@ final class OpenClickyViewModel: ObservableObject {
         let report = await executor.run(
             actions,
             manifest: manifest,
-            primaryHeight: NSScreen.screens.first?.frame.height ?? 0
+            primaryHeight: NSScreen.screens.first?.frame.height ?? 0,
+            app: controlApp
         )
-        controlMouseAnchor = NSEvent.mouseLocation
-        controlIsPosting = false
+        controlApp = report.app
         guard turnGeneration == turn, !Task.isCancelled else { return false }
 
-        if report.userTookOver {
-            stopControl(Strings.controlStoppedMouse)
-            return false
-        }
         controlRounds += 1
         guard controlRounds < ComputerControl.maxRounds else {
             lastError = Strings.controlLimit(ComputerControl.maxRounds)
@@ -752,26 +754,17 @@ final class OpenClickyViewModel: ObservableObject {
         return true
     }
 
-    /// Esc and moving the mouse stop everything, from the first action until
-    /// the request is finished. This reads whether Esc is down right now, and
-    /// where the mouse is. It doesn't see other keys.
+    /// Esc stops everything, from the first action until the request is
+    /// finished. This reads whether Esc is down right now. It doesn't see other keys.
     private func watchControl() {
         guard controlWatchdog == nil else { return }
         overlayManager.isControlling = true
-        controlMouseAnchor = NSEvent.mouseLocation
         controlWatchdog = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 100_000_000)
                 guard let self, !Task.isCancelled else { return }
-                // The hardware's state, so only the user's own key press counts.
                 if CGEventSource.keyState(.hidSystemState, key: 53) {
                     self.stopControl(Strings.controlStoppedEsc)
-                    return
-                }
-                let mouse = NSEvent.mouseLocation
-                if !self.controlIsPosting,
-                   hypot(mouse.x - self.controlMouseAnchor.x, mouse.y - self.controlMouseAnchor.y) > 4 {
-                    self.stopControl(Strings.controlStoppedMouse)
                     return
                 }
             }
@@ -787,7 +780,6 @@ final class OpenClickyViewModel: ObservableObject {
     private func endControlChain() {
         controlWatchdog?.cancel()
         controlWatchdog = nil
-        controlIsPosting = false
         overlayManager.isControlling = false
     }
 

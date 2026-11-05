@@ -239,10 +239,10 @@ enum Strings {
 
     // MARK: Mouse and keyboard
 
-    static let controlToggle = pick("Claude fare ve klavyeyi kullanabilsin", "Let Claude use the mouse and keyboard")
+    static let controlToggle = pick("Claude kendi imleciyle uygulamaları kullanabilsin", "Let Claude use apps with its own cursor")
     static let controlToggleDetail = pick(
-        "Sadece sen bir şey yapmasını istediğinde. Öğretici modunda tıklamaları sen yaparsın.",
-        "Only when you ask it to do something. In a lesson, you do the clicking."
+        "Sadece sen bir şey yapmasını istediğinde. Senin faren ve klavyen sende kalır. Öğretici modunda tıklamaları sen yaparsın.",
+        "Only when you ask it to do something. Your mouse and keyboard stay yours. In a lesson, you do the clicking."
     )
     static let controlNeedsPermission = pick("Erişilebilirlik izni gerekiyor", "Needs Accessibility permission")
     static let controlOpenPermission = pick("İzni Aç", "Open Settings")
@@ -274,11 +274,10 @@ enum Strings {
         "Typing in messaging apps and code editors"
     )
     static let controlStopHint = pick(
-        "Durdurmak için Esc'e bas veya fareyi oynat.",
-        "Press Esc or move the mouse to stop."
+        "Mavi imleç Claude'un faresidir, ne yaptığını oradan izlersin. Durdurmak için Esc'e bas. Bu sırada kendi işine devam edebilirsin. Arka plandaki uygulamaların bazı alanları Claude'un imlecine tepki vermeyebilir.",
+        "The blue cursor is Claude's mouse, so you can watch what it does. Press Esc to stop. You can keep working meanwhile. Some areas of apps in the background may not respond to it."
     )
     static let controlStoppedEsc = pick("Esc'e bastın, durdum.", "You pressed Esc, so I stopped.")
-    static let controlStoppedMouse = pick("Fareyi oynattın, durdum.", "You moved the mouse, so I stopped.")
     static func controlLimit(_ rounds: Int) -> String {
         pick("\(rounds) adımda bitmedi, burada durdum.", "It wasn't done after \(rounds) rounds, so I stopped here.")
     }
@@ -313,7 +312,7 @@ enum Strings {
     }
     static let controlUnknownApp = pick("Hangi uygulama olduğu anlaşılamadı.", "Couldn't tell which app this is.")
     static func controlBannedApp(_ app: String) -> String {
-        pick("\(app) içinde fare ve klavye kullanılamaz.", "The mouse and keyboard can't be used in \(app).")
+        pick("Claude \(app) içinde işlem yapamaz.", "Claude can't act in \(app).")
     }
     static let controlBrowsersOff = pick(
         "Tarayıcılarda kapalı. Ayarlar > Kontrol'den açılabilir.",

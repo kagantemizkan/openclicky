@@ -1,7 +1,7 @@
 //
 //  ComputerControlTests.swift
-//  The control tags, the rules, and how a run stops. The real mouse and
-//  keyboard are covered by `OpenClicky --control-test`.
+//  The control tags, the rules, and how a run stops. Delivery to real apps is
+//  covered by `OpenClicky --control-test`.
 //
 
 import CoreGraphics
@@ -166,33 +166,40 @@ final class ComputerControlTests: XCTestCase {
 
     @MainActor
     private final class FakePoster: ControlPoster {
-        var mouseLocation: CGPoint = .zero
         var log: [String] = []
-        var onAction: (() -> Void)?
+        var apps: [pid_t] = []
 
-        func click(at point: CGPoint, button: ControlAction.Button, count: Int) async {
-            mouseLocation = point
+        func click(at point: CGPoint, button: ControlAction.Button, count: Int, app: pid_t) async {
             log.append("click \(Int(point.x)),\(Int(point.y))")
-            onAction?()
+            apps.append(app)
         }
-        func drag(from: CGPoint, to: CGPoint) async {
-            mouseLocation = to
+        func drag(from: CGPoint, to: CGPoint, app: pid_t) async {
             log.append("drag \(Int(from.x)),\(Int(from.y)) \(Int(to.x)),\(Int(to.y))")
+            apps.append(app)
         }
-        func scroll(at point: CGPoint, lines: Int) async {
-            mouseLocation = point
+        func scroll(at point: CGPoint, lines: Int, app: pid_t) async {
             log.append("scroll \(lines)")
+            apps.append(app)
         }
-        func type(_ text: String) async { log.append("type \(text)") }
-        func press(_ key: ControlKeys.Press) async { log.append("key \(key.code)") }
+        func type(_ text: String, app: pid_t) async {
+            log.append("type \(text)")
+            apps.append(app)
+        }
+        func press(_ key: ControlKeys.Press, app: pid_t) async {
+            log.append("key \(key.code)")
+            apps.append(app)
+        }
     }
 
+    /// Two apps: one under the cursor, and the one the user is busy in.
     @MainActor
     private struct FakeInspector: ControlInspector {
-        var target = ControlTarget(bundleId: "com.example.app")
-        var focused = ControlTarget(bundleId: "com.example.app")
+        var target = ControlTarget(bundleId: "com.example.app", pid: 42)
+        var userApp = ControlTarget(bundleId: "com.example.user", pid: 7)
         func target(at point: CGPoint) -> ControlTarget { target }
-        func focusedTarget() -> ControlTarget { focused }
+        func focusedTarget(inApp app: pid_t?) -> ControlTarget {
+            app == target.pid ? target : userApp
+        }
     }
 
     /// One 640x400 screenshot of a 1280x800 display, to the right of a main
@@ -306,17 +313,50 @@ final class ComputerControlTests: XCTestCase {
     }
 
     @MainActor
-    func testMovingTheMouseTakesOver() async {
+    func testTypingStaysWithTheAppClaudeIsWorkingIn() async {
+        // The user is in another app, and typing there would be their words.
         let poster = FakePoster()
-        poster.onAction = { poster.mouseLocation = CGPoint(x: 5000, y: 5000) }
         let report = await executor(poster: poster).run(
-            [.click(x: 1, y: 1, button: .left, count: 1, screen: nil), .type("x")],
+            [.click(x: 1, y: 1, button: .left, count: 1, screen: nil), .type("x"), .key("return")],
             manifest: manifest,
             primaryHeight: 900
         )
-        XCTAssertEqual(poster.log.count, 1)
+        XCTAssertEqual(poster.apps, [42, 42, 42])
+        XCTAssertEqual(report.app, 42)
+
+        // And on the next round, which starts with no click.
+        let next = FakePoster()
+        _ = await executor(poster: next).run([.type("y")], manifest: manifest, primaryHeight: 900, app: report.app)
+        XCTAssertEqual(next.apps, [42])
+    }
+
+    @MainActor
+    func testTheRulesJudgeTheAppBeingTypedIn() async {
+        let poster = FakePoster()
+        var inspector = FakeInspector()
+        inspector.target = ControlTarget(bundleId: "com.apple.Terminal", pid: 42)
+        let report = await executor(poster: poster, inspector: inspector).run(
+            [.type("rm -rf")],
+            manifest: manifest,
+            primaryHeight: 900,
+            app: 42
+        )
+        XCTAssertEqual(poster.log, [])
         XCTAssertTrue(report.stopped)
-        XCTAssertTrue(report.userTookOver)
+    }
+
+    @MainActor
+    func testAnAppThatCantBeIdentifiedIsNotActedOn() async {
+        let poster = FakePoster()
+        var inspector = FakeInspector()
+        inspector.target.pid = nil
+        let report = await executor(poster: poster, inspector: inspector).run(
+            [.click(x: 1, y: 1, button: .left, count: 1, screen: nil)],
+            manifest: manifest,
+            primaryHeight: 900
+        )
+        XCTAssertEqual(poster.log, [])
+        XCTAssertTrue(report.stopped)
     }
 
     @MainActor

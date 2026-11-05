@@ -112,7 +112,7 @@ final class OverlayManager: ObservableObject {
     /// Where the view drew the caption, in global AppKit coordinates.
     var captionFrame: CGRect? { didSet { updatePointerRegion() } }
 
-    /// While Claude uses the real mouse, every click goes through to the apps below.
+    /// While Claude acts, clicks go through its cursor to the apps below.
     var isControlling = false { didSet { updatePointerRegion() } }
 
     /// Whether the user has moved the cursor's resting place.
